@@ -237,7 +237,6 @@ DEPARTAMENTOS_CANONICOS = {
     "vaupes": "Vaupés", "vichada": "Vichada",
 }
 
-# Alias / errores frecuentes para detección robusta
 DEPT_ALIASES = {
     "antioquia": "Antioquia", "antoquia": "Antioquia", "antioqia": "Antioquia",
     "narino": "Nariño", "nariño": "Nariño", "nariñio": "Nariño",
@@ -387,7 +386,7 @@ def cargar_matricula_superior():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600, show_spinner="Cargando datos reales de datos.gov.co…")
+@st.cache_data(ttl=3600, show_spinner="Cargando datos…")
 def cargar_todo():
     with ThreadPoolExecutor(max_workers=5) as ex:
         partes = [f.result() for f in [
@@ -1010,7 +1009,7 @@ def focus_narino(DF_LONG, lista_inds):
     return res.to_markdown(index=False), style_fig(fig)
 
 # ============================================================
-# CHATBOT ROBUSTO (tolerante a errores ortográficos)
+# CHATBOT ROBUSTO
 # ============================================================
 def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
     q = pregunta.lower().strip()
@@ -1040,11 +1039,9 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
 
     def detectar_depto(texto):
         texto_n = quitar_tildes(texto)
-        # 1. Alias / errores frecuentes
         for alias, canon in DEPT_ALIASES.items():
             if alias in texto_n:
                 return canon
-        # 2. Coincidencia parcial con lista oficial
         for dep in lista_deptos:
             if quitar_tildes(dep) in texto_n or texto_n in quitar_tildes(dep):
                 return dep
@@ -1053,14 +1050,12 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
     anio_solicitado = extrair_anio(q)
     depto_detectado = detectar_depto(q)
 
-    # Si no detectó departamento y la pregunta no menciona Nariño, no forzar Nariño
     if depto_detectado is None:
         if any(x in q_norm for x in ["narino", "nariño"]):
             depto_detectado = "Nariño"
         else:
             depto_detectado = None
 
-    # ---------- HOMICIDIOS (prioridad alta por el error reportado) ----------
     if any(k in q_norm for k in ["homicidio", "himicidio", "homicidios", "himicidios",
                                  "violencia", "seguridad", "asesinato", "muertes violentas", "tasa de homicidio"]):
         depto = depto_detectado or "Nariño"
@@ -1075,7 +1070,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                     respuesta.append(
                         f"**Homicidios en {depto} – {anio_usado}**{nota}: **{int(val)}** casos registrados."
                     )
-                    # contexto adicional
                     if len(serie) >= 2:
                         prev_val, _ = valor_anio(serie, anio_usado - 1)
                         if prev_val and prev_val > 0:
@@ -1090,7 +1084,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                     f"**Homicidios en {depto}** (últimos años disponibles):\n" + "\n".join(lineas)
                 )
 
-    # ---------- PIB ----------
     if any(k in q_norm for k in ["pib", "producto interno", "economia", "crecimiento economico"]):
         depto = depto_detectado or "Nariño"
         serie = get_serie(depto, "PIB")
@@ -1130,7 +1123,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                             f"**{pos.index[0]+1}** de {len(rank)} departamentos."
                         )
 
-    # ---------- Recursos DNP ----------
     if any(k in q_norm for k in ["dnp", "inversion", "recursos", "presupuesto", "transferencias", "gasto publico"]):
         depto = depto_detectado or "Nariño"
         serie = get_serie(depto, "Recursos_DNP")
@@ -1150,7 +1142,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                     f"**{ult['valor']:,.0f}**."
                 )
 
-    # ---------- Educación ----------
     if any(k in q_norm for k in ["educacion", "cobertura", "matricula", "escolar", "matriculacion"]):
         depto = depto_detectado or "Nariño"
         eds = [i for i in lista_inds if any(x in i for x in ["Educacion", "Matricula", "Matriculacion"])]
@@ -1172,7 +1163,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
         else:
             respuesta.append("No hay indicadores educativos disponibles.")
 
-    # ---------- Municipios ----------
     if any(k in q_norm for k in ["municipio", "municipal", "pasto", "ipiales", "tumaco", "tuquerres",
                                  "valor agregado", "per capita", "percapita", "va primario", "sector"]):
         if DF_MUN is not None and not DF_MUN.empty:
@@ -1212,7 +1202,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
         else:
             respuesta.append("Datos municipales no disponibles en esta sesión.")
 
-    # ---------- Ranking ----------
     if any(k in q_norm for k in ["comparar", "ranking", "posicion", "mejor", "peor", "nacional"]):
         ind = "PIB"
         for posible in lista_inds:
@@ -1232,7 +1221,6 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                     f"**Nariño** ocupa la posición **{pos_nar.index[0]+1}** de {len(rank)}."
                 )
 
-    # ---------- Fallback ----------
     if not respuesta:
         if any(k in q_norm for k in ["hola", "ayuda", "que puedes", "como funciona", "ejemplos"]):
             respuesta.append(
@@ -1635,7 +1623,6 @@ elif seccion == "🏘️ Valor Agregado Municipal":
         with st.expander("Tabla de datos filtrados"):
             st.dataframe(df_f.sort_values(["municipio", "anio"]), use_container_width=True, hide_index=True)
 
-# ---------- GENERADOR DE INFORMES (MEJORADO Y EXTENSO) ----------
 elif seccion == "📑 Generador de Informes":
     st.markdown("## 📑 Generador de Informes de Política")
     st.markdown(
@@ -1702,7 +1689,6 @@ elif seccion == "📑 Generador de Informes":
             elif cambio < -5:
                 tendencia = "descendente"
 
-        # ---------- Interpretación sustancial ----------
         def generar_interpretacion_extensa():
             txt = []
             txt.append(f"### 1. Contexto del indicador **{ind_inf}** en Nariño ({anio_inf})")
@@ -1840,7 +1826,7 @@ elif seccion == "📑 Generador de Informes":
 
         with tab_r4:
             st.subheader("Exportación de Reportes")
-            st.info("El informe se genera automáticamente con interpretación extensa. Puedes añadir notas opcionales.")
+            st.info("Informe generado automáticamente. Puedes añadir notas opcionales.")
             notas_extra = st.text_area(
                 "Notas adicionales del analista (opcional)",
                 height=100,
@@ -1895,7 +1881,6 @@ elif seccion == "📑 Generador de Informes":
             st.markdown(md_content)
 
     else:
-        # Municipal (resumen más corto pero coherente)
         col1, col2 = st.columns(2)
         with col1:
             muns_inf = st.multiselect(
@@ -1967,6 +1952,7 @@ elif seccion == "📑 Generador de Informes":
 
         with tab_r4:
             st.subheader("Exportación")
+            st.info("Informe generado automáticamente. Puedes añadir notas opcionales.")
             notas_m = st.text_area("Notas adicionales (opcional)", height=80, key="obs_m")
             md_m = [
                 "# Informe Municipal – Valor Agregado Nariño",
@@ -1995,9 +1981,8 @@ elif seccion == "💬 Chatbot del Observatorio":
     st.markdown(
         """
         <div class="tip-box">
-        Asistente contextual basado en reglas sobre los datos del Observatorio.
-        Pregunta por PIB de cualquier departamento y año, homicidios, recursos DNP, educación o municipios de Nariño.
-        Tolera errores ortográficos frecuentes (ej. “antoquia”, “himicidios”).
+        Asistente contextual del Observatorio. Puedes consultar indicadores de Nariño, 
+        municipios de Nariño y otros departamentos, indicando el año que solicites.
         </div>
         """,
         unsafe_allow_html=True,
