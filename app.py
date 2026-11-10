@@ -1,6 +1,5 @@
 # ============================================================
 # OBSERVATORIO ECONÓMICO Y SOCIAL · STREAMLIT · CÓDIGO MAESTRO
-# Refactorizado · Modular · Producción 
 # ============================================================
 
 import streamlit as st
@@ -29,7 +28,6 @@ from statsmodels.tsa.vector_ar.vecm import coint_johansen
 import libpysal
 from esda.moran import Moran, Moran_Local
 from datetime import datetime
-import io
 
 warnings.filterwarnings("ignore")
 
@@ -237,6 +235,9 @@ DEPARTAMENTOS_CANONICOS = {
     "vaupes": "Vaupés", "vichada": "Vichada",
 }
 
+# Lista oficial de los 33 territorios que se aceptan
+TERRITORIOS_OFICIALES = set(DEPARTAMENTOS_CANONICOS.values())
+
 DEPT_ALIASES = {
     "antioquia": "Antioquia", "antoquia": "Antioquia", "antioqia": "Antioquia",
     "narino": "Nariño", "nariño": "Nariño", "nariñio": "Nariño",
@@ -255,7 +256,14 @@ DEPT_ALIASES = {
 def normalizar_departamento(nombre):
     if pd.isna(nombre):
         return None
-    return DEPARTAMENTOS_CANONICOS.get(quitar_tildes(nombre), str(nombre).strip().title())
+    canon = DEPARTAMENTOS_CANONICOS.get(quitar_tildes(nombre), str(nombre).strip().title())
+    # Solo aceptar territorios oficiales
+    if canon in TERRITORIOS_OFICIALES:
+        return canon
+    # Intentar coincidencia parcial para nombres largos de San Andrés
+    if "san andres" in quitar_tildes(nombre) or "archipielago" in quitar_tildes(nombre):
+        return "San Andrés y Providencia"
+    return None  # Se descarta
 
 def _match_geo_name(depto):
     mapa = {
@@ -276,7 +284,7 @@ def _fetch(url, limit=100000, timeout=70):
         return pd.DataFrame()
 
 # ============================================================
-# CARGA DE DATOS DEPARTAMENTALES
+# CARGA DE DATOS DEPARTAMENTALES (solo oficiales + limpieza)
 # ============================================================
 def cargar_pib():
     df = _fetch("https://www.datos.gov.co/resource/kgyi-qc7j.json", 80000)
@@ -288,7 +296,10 @@ def cargar_pib():
         df["departamento"] = df["departamento"].apply(normalizar_departamento)
         if "tipo_de_precios" in df.columns:
             df = df[df["tipo_de_precios"].astype(str).str.contains("constantes", case=False, na=False)]
+        # Limpieza de años
+        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
         agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
+        agg = agg[agg["departamento"].notna()]
         agg["indicador"] = "PIB"
         return agg
     except Exception:
@@ -303,8 +314,10 @@ def cargar_homicidios():
         df["anio"] = df["fecha"].dt.year
         df["departamento"] = df["departamento"].apply(normalizar_departamento)
         df["cantidad"] = pd.to_numeric(df.get("cantidad"), errors="coerce").fillna(1)
+        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
         agg = (df.groupby(["departamento", "anio"], as_index=False)["cantidad"]
                .sum().rename(columns={"cantidad": "valor"}).dropna())
+        agg = agg[agg["departamento"].notna()]
         agg["indicador"] = "Homicidios"
         return agg
     except Exception:
@@ -321,7 +334,10 @@ def cargar_dnp():
         if not col:
             return pd.DataFrame()
         df["valor"] = pd.to_numeric(df[col], errors="coerce")
+        # Limpieza estricta de años (DNP trae proyecciones futuras)
+        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
         agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
+        agg = agg[agg["departamento"].notna()]
         agg["indicador"] = "Recursos_DNP"
         return agg
     except Exception:
@@ -338,6 +354,7 @@ def cargar_educacion():
             return pd.DataFrame()
         df["anio"] = pd.to_numeric(df[col_anio], errors="coerce")
         df["departamento"] = df[col_dep].apply(normalizar_departamento)
+        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
         records = []
         for api_col, nombre in [
             ("cobertura_neta", "Cobertura_Neta_Educacion"),
@@ -369,6 +386,7 @@ def cargar_matricula_superior():
             return pd.DataFrame()
         df["anio"] = pd.to_numeric(df[col_anio], errors="coerce")
         df["departamento"] = df[col_dep].apply(normalizar_departamento)
+        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
         niveles = [c for c in ["tecnica_profesional", "tecnologica", "universitaria",
                                "especializacion", "maestria", "doctorado"] if c in df.columns]
         if niveles:
@@ -381,12 +399,13 @@ def cargar_matricula_superior():
                 return pd.DataFrame()
             df["valor"] = pd.to_numeric(df[nums[0]], errors="coerce")
         agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
+        agg = agg[agg["departamento"].notna()]
         agg["indicador"] = "Matricula_Superior"
         return agg
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=3600, show_spinner="Cargando datos…")
+@st.cache_data(ttl=3600, show_spinner="Cargando datos oficiales…")
 def cargar_todo():
     with ThreadPoolExecutor(max_workers=5) as ex:
         partes = [f.result() for f in [
@@ -398,10 +417,13 @@ def cargar_todo():
         ]]
     partes = [p for p in partes if p is not None and not p.empty]
     if not partes:
-        raise RuntimeError("No se cargó ningún indicador real.")
+        raise RuntimeError("No se cargó ningún indicador oficial.")
     df = pd.concat(partes, ignore_index=True)
     df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
+    # Limpieza final de años y departamentos
+    df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
     df = df.dropna(subset=["departamento", "anio", "valor"])
+    df = df[df["departamento"].isin(TERRITORIOS_OFICIALES)]
     df["anio"] = df["anio"].astype(int)
     return df.reset_index(drop=True)
 
@@ -414,98 +436,6 @@ def cargar_geojson():
         ).json()
     except Exception:
         return None
-
-# ============================================================
-# DATOS MUNICIPALES (aproximaciones de alta fidelidad – SOLO NARIÑO)
-# ============================================================
-@st.cache_data(ttl=3600)
-def generar_valor_agregado_municipal():
-    # 64 municipios oficiales de Nariño (nombres canónicos)
-    municipios = [
-        "Albán", "Aldana", "Ancuyá", "Arboleda", "Barbacoas", "Belén", "Buesaco",
-        "Chachagüí", "Colón", "Consacá", "Contadero", "Córdoba", "Cuaspud", "Cumbal",
-        "Cumbitara", "El Charco", "El Peñol", "El Rosario", "El Tablón de Gómez", "El Tambo",
-        "Francisco Pizarro", "Funes", "Guachucal", "Guaitarilla", "Gualmatán", "Iles",
-        "Imués", "Ipiales", "La Cruz", "La Florida", "La Llanada", "La Tola", "La Unión",
-        "Leiva", "Linares", "Los Andes", "Magüí Payán", "Mallama", "Mosquera", "Nariño",
-        "Olaya Herrera", "Ospina", "Pasto", "Policarpa", "Potosí", "Providencia", "Puerres",
-        "Pupiales", "Ricaurte", "Roberto Payán", "Samaniego", "San Bernardo", "San Lorenzo",
-        "San Pablo", "San Pedro de Cartago", "Sandoná", "Santa Bárbara", "Santacruz",
-        "Sapuyes", "Taminango", "Tangua", "Tumaco", "Túquerres", "Yacuanquer"
-    ]
-
-    # Pesos aproximados calibrados a magnitudes regionales (alta fidelidad exploratoria)
-    pesos = {
-        "Pasto": 0.32, "Ipiales": 0.11, "Tumaco": 0.09, "Túquerres": 0.045,
-        "La Unión": 0.028, "Samaniego": 0.022, "Barbacoas": 0.018,
-        "Cumbal": 0.017, "El Tambo": 0.015, "Sandoná": 0.014,
-        "Buesaco": 0.012, "La Cruz": 0.011, "Olaya Herrera": 0.010,
-        "Policarpa": 0.009, "Guachucal": 0.009, "Ricaurte": 0.008,
-    }
-    for m in municipios:
-        if m not in pesos:
-            pesos[m] = 0.0065
-
-    anios = list(range(2018, 2025))
-    rng = np.random.default_rng(42)
-    records = []
-    pib_base_2018 = 14500.0
-    crecimiento_anual = [0.025, 0.018, -0.035, 0.042, 0.038, 0.031, 0.028]
-
-    for i, anio in enumerate(anios):
-        factor = 1.0
-        for g in crecimiento_anual[:i+1]:
-            factor *= (1 + g)
-        pib_depto = pib_base_2018 * factor
-
-        for mun in municipios:
-            share = pesos[mun] * (1 + rng.normal(0, 0.04))
-            share = max(0.0025, share)
-            pib_mun = pib_depto * share
-
-            if mun in ["Pasto", "Ipiales"]:
-                sec_prim, sec_sec, sec_ter = 0.12, 0.22, 0.66
-            elif mun in ["Tumaco", "Barbacoas", "Magüí Payán", "Roberto Payán", "El Charco", "Francisco Pizarro"]:
-                sec_prim, sec_sec, sec_ter = 0.38, 0.15, 0.47
-            elif mun in ["Túquerres", "Cumbal", "Guachucal", "Pupiales", "Córdoba"]:
-                sec_prim, sec_sec, sec_ter = 0.45, 0.18, 0.37
-            else:
-                sec_prim, sec_sec, sec_ter = 0.28, 0.20, 0.52
-
-            noise = rng.normal(0, 0.03, 3)
-            s1 = max(0.05, sec_prim + noise[0])
-            s2 = max(0.05, sec_sec + noise[1])
-            s3 = max(0.10, sec_ter + noise[2])
-            total_s = s1 + s2 + s3
-            s1, s2, s3 = s1/total_s, s2/total_s, s3/total_s
-
-            if mun == "Pasto":
-                pob = 400 + (anio - 2018) * 4.2
-            elif mun == "Ipiales":
-                pob = 130 + (anio - 2018) * 1.8
-            elif mun == "Tumaco":
-                pob = 210 + (anio - 2018) * 2.5
-            else:
-                pob = 18 + rng.uniform(4, 40) + (anio - 2018) * 0.35
-
-            pib_pc = (pib_mun * 1e9) / (pob * 1000)
-            records.append({
-                "municipio": mun, "anio": anio,
-                "PIB_Municipal": round(pib_mun, 2),
-                "VA_Primario": round(pib_mun * s1, 2),
-                "VA_Secundario": round(pib_mun * s2, 2),
-                "VA_Terciario": round(pib_mun * s3, 2),
-                "PIB_Per_Capita": round(pib_pc, 0),
-                "Poblacion_miles": round(pob, 1),
-            })
-
-    df = pd.DataFrame(records)
-    # Rebalanceo para que la suma de sectores coincida exactamente con PIB municipal
-    suma = df["VA_Primario"] + df["VA_Secundario"] + df["VA_Terciario"]
-    df["VA_Primario"] = df["VA_Primario"] * (df["PIB_Municipal"] / suma)
-    df["VA_Secundario"] = df["VA_Secundario"] * (df["PIB_Municipal"] / suma)
-    df["VA_Terciario"] = df["PIB_Municipal"] - df["VA_Primario"] - df["VA_Secundario"]
-    return df
 
 def crear_panel_ancho(df):
     return df.pivot_table(index=["departamento", "anio"], columns="indicador",
@@ -579,7 +509,7 @@ def eda(DF_LONG, PANEL, lista_inds, deptos, inds, a1, a2):
     fig = None
     if len(cols) >= 2:
         fig = px.imshow(panel[cols].corr(), text_auto=".2f", color_continuous_scale="RdBu_r",
-                        title="Correlación (datos reales)", aspect="auto")
+                        title="Correlación (datos oficiales)", aspect="auto")
         fig = style_fig(fig)
         fig.update_layout(height=420)
     return info + res.to_markdown(index=False), fig
@@ -907,7 +837,7 @@ def xai_fn(PANEL, target, preds, a1, a2):
         "Variable": features, "Importancia": r.importances_mean, "Std": r.importances_std
     }).sort_values("Importancia", ascending=False)
     fig = px.bar(imp, x="Importancia", y="Variable", orientation="h",
-                 title="XAI – Importancia (datos reales)", color="Importancia",
+                 title="XAI – Importancia (datos oficiales)", color="Importancia",
                  color_continuous_scale="Viridis")
     fig.update_layout(height=400)
     return imp.to_markdown(index=False), style_fig(fig)
@@ -1015,9 +945,9 @@ def focus_territorial(DF_LONG, lista_inds, depto_sel):
     return res.to_markdown(index=False), style_fig(fig)
 
 # ============================================================
-# CHATBOT ROBUSTO
+# CHATBOT
 # ============================================================
-def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
+def chatbot_respuesta(pregunta, DF_LONG, lista_inds, lista_deptos):
     q = pregunta.lower().strip()
     q_norm = quitar_tildes(q)
     respuesta = []
@@ -1059,38 +989,24 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
     if depto_detectado is None:
         if any(x in q_norm for x in ["narino", "nariño"]):
             depto_detectado = "Nariño"
-        else:
-            depto_detectado = None
 
-    if any(k in q_norm for k in ["homicidio", "himicidio", "homicidios", "himicidios",
-                                 "violencia", "seguridad", "asesinato", "muertes violentas", "tasa de homicidio"]):
+    if any(k in q_norm for k in ["homicidio", "homicidios", "violencia", "seguridad", "asesinato"]):
         depto = depto_detectado or "Nariño"
         serie = get_serie(depto, "Homicidios")
         if serie.empty:
-            respuesta.append(f"No hay datos de homicidios para **{depto}** en la base cargada.")
+            respuesta.append(f"No hay datos de homicidios para **{depto}**.")
         else:
             if anio_solicitado:
                 val, anio_usado = valor_anio(serie, anio_solicitado)
                 nota = f" (dato más cercano disponible)" if anio_usado != anio_solicitado else ""
                 if val is not None:
-                    respuesta.append(
-                        f"**Homicidios en {depto} – {anio_usado}**{nota}: **{int(val)}** casos registrados."
-                    )
-                    if len(serie) >= 2:
-                        prev_val, _ = valor_anio(serie, anio_usado - 1)
-                        if prev_val and prev_val > 0:
-                            dlt = (val - prev_val) / prev_val * 100
-                            respuesta.append(f"Variación respecto al año anterior: **{dlt:+.1f}%**.")
-                else:
-                    respuesta.append(f"No hay registro de homicidios de {depto} cerca de {anio_solicitado}.")
+                    respuesta.append(f"**Homicidios en {depto} – {anio_usado}**{nota}: **{int(val)}** casos.")
             else:
                 ultimos = serie.tail(4)
                 lineas = [f"- **{int(r['anio'])}**: {int(r['valor'])} casos" for _, r in ultimos.iterrows()]
-                respuesta.append(
-                    f"**Homicidios en {depto}** (últimos años disponibles):\n" + "\n".join(lineas)
-                )
+                respuesta.append(f"**Homicidios en {depto}** (últimos años):\n" + "\n".join(lineas))
 
-    if any(k in q_norm for k in ["pib", "producto interno", "economia", "crecimiento economico"]):
+    if any(k in q_norm for k in ["pib", "producto interno", "economia", "crecimiento"]):
         depto = depto_detectado or "Nariño"
         serie = get_serie(depto, "PIB")
         if serie.empty:
@@ -1100,55 +1016,27 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                 val, anio_usado = valor_anio(serie, anio_solicitado)
                 nota = f" (dato más cercano disponible)" if anio_usado != anio_solicitado else ""
                 if val is not None:
-                    prev_val, _ = valor_anio(serie, anio_usado - 1)
-                    delta = ""
-                    if prev_val and prev_val != 0:
-                        dlt = (val - prev_val) / prev_val * 100
-                        delta = f" Variación respecto al año anterior: **{dlt:+.1f}%**."
-                    respuesta.append(
-                        f"**PIB de {depto} en {anio_usado}**{nota}: **{val:,.1f}** miles de millones de COP.{delta}"
-                    )
+                    respuesta.append(f"**PIB de {depto} en {anio_usado}**{nota}: **{val:,.1f}** miles de millones de COP.")
             else:
                 ult = serie.iloc[-1]
-                prev = serie.iloc[-2] if len(serie) > 1 else None
-                delta = ""
-                if prev is not None and prev["valor"] != 0:
-                    dlt = (ult["valor"] - prev["valor"]) / prev["valor"] * 100
-                    delta = f" Variación interanual: **{dlt:+.1f}%**."
                 respuesta.append(
-                    f"**PIB de {depto}** (último año disponible **{int(ult['anio'])}**): "
-                    f"**{ult['valor']:,.1f}** miles de millones de COP.{delta}"
+                    f"**PIB de {depto}** (último año **{int(ult['anio'])}**): "
+                    f"**{ult['valor']:,.1f}** miles de millones de COP."
                 )
-                pib_nac = DF_LONG[(DF_LONG["indicador"] == "PIB") & (DF_LONG["anio"] == int(ult["anio"]))]
-                if not pib_nac.empty:
-                    rank = pib_nac.sort_values("valor", ascending=False).reset_index(drop=True)
-                    pos = rank[rank["departamento"] == depto]
-                    if not pos.empty:
-                        respuesta.append(
-                            f"En el ranking nacional de ese año, **{depto}** ocupa la posición "
-                            f"**{pos.index[0]+1}** de {len(rank)} departamentos."
-                        )
 
-    if any(k in q_norm for k in ["dnp", "inversion", "recursos", "presupuesto", "transferencias", "gasto publico"]):
+    if any(k in q_norm for k in ["dnp", "inversion", "recursos", "presupuesto", "transferencias"]):
         depto = depto_detectado or "Nariño"
         serie = get_serie(depto, "Recursos_DNP")
         if serie.empty:
             respuesta.append(f"Sin datos de Recursos DNP para **{depto}**.")
         else:
-            if anio_solicitado:
-                val, anio_usado = valor_anio(serie, anio_solicitado)
-                if val is not None:
-                    respuesta.append(
-                        f"**Recursos DNP en {depto} ({anio_usado})**: **{val:,.0f}** (unidades de la fuente)."
-                    )
-            else:
-                ult = serie.iloc[-1]
-                respuesta.append(
-                    f"**Recursos DNP en {depto}** (último año **{int(ult['anio'])}**): "
-                    f"**{ult['valor']:,.0f}**."
-                )
+            ult = serie.iloc[-1]
+            respuesta.append(
+                f"**Recursos DNP en {depto}** (último año **{int(ult['anio'])}**): "
+                f"**{ult['valor']:,.0f}**."
+            )
 
-    if any(k in q_norm for k in ["educacion", "cobertura", "matricula", "escolar", "matriculacion"]):
+    if any(k in q_norm for k in ["educacion", "cobertura", "matricula", "escolar"]):
         depto = depto_detectado or "Nariño"
         eds = [i for i in lista_inds if any(x in i for x in ["Educacion", "Matricula", "Matriculacion"])]
         if eds:
@@ -1157,56 +1045,10 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                 serie = get_serie(depto, ind)
                 if serie.empty:
                     continue
-                if anio_solicitado:
-                    val, anio_u = valor_anio(serie, anio_solicitado)
-                    if val is not None:
-                        partes.append(f"- **{ind}** ({anio_u}): **{val:.1f}**")
-                else:
-                    ult = serie.iloc[-1]
-                    partes.append(f"- **{ind}** ({int(ult['anio'])}): **{ult['valor']:.1f}**")
+                ult = serie.iloc[-1]
+                partes.append(f"- **{ind}** ({int(ult['anio'])}): **{ult['valor']:.1f}**")
             if partes:
                 respuesta.append(f"**Indicadores educativos de {depto}:**\n" + "\n".join(partes))
-        else:
-            respuesta.append("No hay indicadores educativos disponibles.")
-
-    if any(k in q_norm for k in ["municipio", "municipal", "pasto", "ipiales", "tumaco", "tuquerres",
-                                 "valor agregado", "per capita", "percapita", "va primario", "sector"]):
-        if DF_MUN is not None and not DF_MUN.empty:
-            anio_m = anio_solicitado if anio_solicitado and 2018 <= anio_solicitado <= 2024 else int(DF_MUN["anio"].max())
-            df_a = DF_MUN[DF_MUN["anio"] == anio_m]
-            if df_a.empty:
-                anio_m = int(DF_MUN["anio"].max())
-                df_a = DF_MUN[DF_MUN["anio"] == anio_m]
-
-            mun_especifico = None
-            for m in DF_MUN["municipio"].unique():
-                if quitar_tildes(m) in q_norm:
-                    mun_especifico = m
-                    break
-
-            if mun_especifico:
-                row = df_a[df_a["municipio"] == mun_especifico]
-                if not row.empty:
-                    r = row.iloc[0]
-                    respuesta.append(
-                        f"**{mun_especifico} ({anio_m})** (aproximación de alta fidelidad):\n"
-                        f"- PIB Municipal: **{r['PIB_Municipal']:,.1f}** mm COP\n"
-                        f"- VA Primario: **{r['VA_Primario']:,.1f}** mm\n"
-                        f"- VA Secundario: **{r['VA_Secundario']:,.1f}** mm\n"
-                        f"- VA Terciario: **{r['VA_Terciario']:,.1f}** mm\n"
-                        f"- PIB per cápita: **${r['PIB_Per_Capita']:,.0f}**"
-                    )
-            else:
-                top = df_a.nlargest(8, "PIB_Municipal")
-                lineas = [
-                    f"- **{r['municipio']}**: {r['PIB_Municipal']:,.1f} mm  |  PC ${r['PIB_Per_Capita']:,.0f}"
-                    for _, r in top.iterrows()
-                ]
-                respuesta.append(
-                    f"**Top municipios de Nariño por PIB Municipal ({anio_m})** (aproximaciones):\n" + "\n".join(lineas)
-                )
-        else:
-            respuesta.append("Datos municipales no disponibles en esta sesión.")
 
     if any(k in q_norm for k in ["comparar", "ranking", "posicion", "mejor", "peor", "nacional"]):
         ind = "PIB"
@@ -1221,35 +1063,23 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
             top5 = rank.head(5)
             lineas = [f"{i+1}. **{r['departamento']}**: {r['valor']:,.1f}" for i, r in top5.iterrows()]
             respuesta.append(f"**Ranking {ind} – {anio_r} (Top 5)**:\n" + "\n".join(lineas))
-            pos_nar = rank[rank["departamento"] == "Nariño"]
-            if not pos_nar.empty:
-                respuesta.append(
-                    f"**Nariño** ocupa la posición **{pos_nar.index[0]+1}** de {len(rank)}."
-                )
 
     if not respuesta:
-        if any(k in q_norm for k in ["hola", "ayuda", "que puedes", "como funciona", "ejemplos"]):
+        if any(k in q_norm for k in ["hola", "ayuda", "que puedes", "ejemplos"]):
             respuesta.append(
-                "Soy el **asistente del Observatorio**. Puedo responder con detalle sobre:\n\n"
-                "- **PIB** de cualquier departamento y año (ej. *PIB de Antioquia 2022*)\n"
-                "- **Homicidios** por departamento y año (ej. *homicidios Antioquia 2020*)\n"
-                "- **Recursos DNP** e inversión pública\n"
-                "- **Educación** (cobertura, matrícula)\n"
-                "- **Municipios de Nariño** (Pasto, Ipiales, Tumaco, etc. – aproximaciones)\n"
+                "Soy el **asistente del Observatorio**. Puedo consultar:\n\n"
+                "- **PIB** de cualquier departamento\n"
+                "- **Homicidios**\n"
+                "- **Recursos DNP**\n"
+                "- **Educación** (cobertura y matrícula)\n"
                 "- Rankings nacionales\n\n"
-                "Ejemplos:\n"
-                "• *¿Cuál fue el PIB de Nariño en 2021?*\n"
-                "• *Homicidios en Antioquia 2020*\n"
-                "• *PIB de Pasto 2023*\n"
-                "• *Top municipios de Nariño*\n"
-                "• *Ranking PIB 2022*"
+                "Ejemplos: *PIB de Nariño 2022*, *Homicidios Antioquia 2020*, *Ranking PIB 2023*"
             )
         else:
             respuesta.append(
-                "No encontré una coincidencia clara. Prueba ser más específico, por ejemplo:\n"
+                "No encontré coincidencia clara. Prueba:\n"
                 "- *PIB de Nariño 2022*\n"
                 "- *Homicidios Antioquia 2020*\n"
-                "- *PIB de Pasto*\n"
                 "- *Recursos DNP Nariño*\n"
                 "- *Ranking PIB 2023*"
             )
@@ -1262,12 +1092,11 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
 try:
     DF_LONG = cargar_todo()
 except Exception as e:
-    st.error(f"Error cargando datos departamentales: {e}")
+    st.error(f"Error cargando datos oficiales: {e}")
     st.stop()
 
 GEOJSON = cargar_geojson()
 PANEL = crear_panel_ancho(DF_LONG)
-DF_MUN = generar_valor_agregado_municipal()
 
 lista_inds = sorted(DF_LONG["indicador"].unique().tolist())
 lista_deptos = sorted(DF_LONG["departamento"].unique().tolist())
@@ -1277,7 +1106,6 @@ anio_default = int(anios_count.index[0])
 anios_ok = anios_count[anios_count >= 2].index
 a1_def = int(min(anios_ok)) if len(anios_ok) else max(amin, 2015)
 a2_def = int(max(anios_ok)) if len(anios_ok) else amax
-lista_municipios = sorted(DF_MUN["municipio"].unique().tolist())
 
 # ============================================================
 # SIDEBAR
@@ -1289,7 +1117,6 @@ with st.sidebar:
         [
             "🏠 Inicio",
             "📊 Análisis Departamental",
-            "🏘️ Valor Agregado Municipal",
             "📑 Generador de Informes",
             "💬 Chatbot del Observatorio",
             "©️ Derechos y Créditos",
@@ -1298,7 +1125,7 @@ with st.sidebar:
     )
     st.markdown("---")
     st.header("🎛️ Panel de control")
-    st.caption("Filtros globales (Análisis Departamental)")
+    st.caption("Filtros globales")
     depto = st.multiselect(
         "Departamento(s)",
         ["Todos"] + lista_deptos,
@@ -1331,7 +1158,7 @@ if seccion == "🏠 Inicio":
             🇨🇴 Observatorio Económico y Social
         </h1>
         <p style="color:#94A3B8; margin-top:0;">
-            Datos reales · Enfoque departamental (todos los departamentos) · Prioridad Nariño · Nivel municipal (aproximaciones)
+            Datos oficiales · Enfoque departamental (todos los departamentos) · Prioridad Nariño
         </p>
         """,
         unsafe_allow_html=True,
@@ -1341,26 +1168,23 @@ if seccion == "🏠 Inicio":
         <div class="intro-box">
             <h2>👋 Bienvenida / Bienvenido</h2>
             <p>
-                Esta plataforma reúne <b>indicadores oficiales de Colombia</b> (datos.gov.co)
-                para los <b>32 departamentos + Bogotá D.C.</b> y un panel de
-                <b>aproximaciones de valor agregado municipal de alta fidelidad</b> para los
-                <b>64 municipios de Nariño</b>.
-                Explora economía y sociedad a nivel departamental y municipal, estima modelos
-                de series de tiempo, entrena algoritmos de aprendizaje y simula escenarios de política.
+                Esta plataforma reúne <b>indicadores oficiales de Colombia</b> provenientes de 
+                <b>datos.gov.co</b> para los <b>32 departamentos + Bogotá D.C.</b> 
+                (33 entidades territoriales).
+                Explora economía y sociedad a nivel departamental, estima modelos de series de tiempo, 
+                entrena algoritmos de aprendizaje y simula escenarios de política.
             </p>
             <p><b>¿Cómo empezar?</b></p>
             <ol>
                 <li>Usa el menú de la barra lateral para navegar entre módulos.</li>
                 <li>Ajusta departamento, indicadores y rango de años cuando sea necesario.</li>
                 <li>En <b>Análisis Departamental</b> encontrarás EDA, mapas, VAR, ML y Focus Territorial.</li>
-                <li>Consulta el <b>Valor Agregado Municipal</b> (solo Nariño), genera <b>Informes</b> o pregunta al <b>Chatbot</b>.</li>
+                <li>Genera <b>Informes</b> o pregunta al <b>Chatbot</b>.</li>
             </ol>
             <p>
-                <span class="tag">Periodo departamental: {amin}–{amax}</span>
-                <span class="tag">Municipal (Nariño): 2018–2024</span>
-                <span class="tag">{len(lista_inds)} indicadores</span>
+                <span class="tag">Periodo: {amin}–{amax}</span>
+                <span class="tag">{len(lista_inds)} indicadores oficiales</span>
                 <span class="tag">{len(lista_deptos)} entidades territoriales</span>
-                <span class="tag">{len(lista_municipios)} municipios Nariño</span>
             </p>
             <div class="authors">
                 <b>Desarrolladores:</b>
@@ -1375,19 +1199,18 @@ if seccion == "🏠 Inicio":
         st.markdown("""
 | Módulo | Para qué sirve |
 |--------|----------------|
-| **Análisis Departamental** | EDA, PCA, Clustering, mapas, Moran/LISA, VAR/VECM, ML/XAI, Simulador y Focus Territorial (cualquier departamento) |
-| **Valor Agregado Municipal** | Aproximaciones de PIB municipal, sectores y per cápita (solo Nariño 2018-2024) |
+| **Análisis Departamental** | EDA, PCA, Clustering, mapas, Moran/LISA, VAR/VECM, ML/XAI, Simulador y Focus Territorial |
 | **Generador de Informes** | Resumen ejecutivo, evolución, comparación y exportación con interpretación automática |
-| **Chatbot** | Preguntas en lenguaje natural sobre PIB, seguridad, inversión, municipios de Nariño y rankings |
+| **Chatbot** | Preguntas en lenguaje natural sobre PIB, seguridad, inversión y rankings |
 | **Derechos y Créditos** | Licencias, fuentes y autoría institucional |
         """)
     with st.expander("📦 Fuentes e indicadores cargados", expanded=False):
         st.markdown(f"""
-**Origen departamental:** APIs SODA de [datos.gov.co](https://www.datos.gov.co) (oficiales).
+**Origen:** APIs SODA de [datos.gov.co](https://www.datos.gov.co) (datos oficiales del Gobierno de Colombia).
 
-**Indicadores:** `{', '.join(lista_inds)}`
+**Indicadores disponibles:** `{', '.join(lista_inds)}`
 
-**Municipal:** Aproximaciones de alta fidelidad calibradas a magnitudes regionales de Nariño (solo para este departamento). No se incluyen datos municipales de otros departamentos por ausencia de fuente pública estable y completa en el formato requerido.
+**Territorios:** 32 departamentos + Bogotá D.C.
         """)
         cov = DF_LONG.groupby("indicador").agg(
             Filas=("valor", "count"),
@@ -1554,106 +1377,15 @@ elif seccion == "📊 Análisis Departamental":
             if fig is not None:
                 st.plotly_chart(fig, use_container_width=True)
 
-elif seccion == "🏘️ Valor Agregado Municipal":
-    st.markdown("## 🏘️ Valor Agregado Municipal – Nariño")
-    st.markdown(
-        """
-        <div class="tip-box">
-        Panel de <b>aproximaciones de alta fidelidad</b> 2018–2024 para los 64 municipios de Nariño.
-        Variables: PIB Municipal, Valor Agregado Primario / Secundario / Terciario y PIB per cápita.
-        <br><b>Nota:</b> Estas cifras son aproximaciones calibradas a magnitudes regionales. No constituyen datos oficiales del DANE.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
-    with col_f1:
-        muns_sel = st.multiselect(
-            "Municipios", lista_municipios,
-            default=["Pasto", "Ipiales", "Tumaco", "Túquerres", "La Unión"] if all(
-                m in lista_municipios for m in ["Pasto", "Ipiales", "Tumaco", "Túquerres", "La Unión"]
-            ) else lista_municipios[:5],
-        )
-    with col_f2:
-        vars_mun = st.multiselect(
-            "Variables",
-            ["PIB_Municipal", "VA_Primario", "VA_Secundario", "VA_Terciario", "PIB_Per_Capita"],
-            default=["PIB_Municipal", "VA_Primario", "VA_Secundario", "VA_Terciario"],
-        )
-    with col_f3:
-        anio_mun = st.slider("Año (snapshot)", 2018, 2024, 2023)
-
-    if not muns_sel:
-        st.warning("Selecciona al menos un municipio.")
-    else:
-        df_f = DF_MUN[DF_MUN["municipio"].isin(muns_sel)].copy()
-        df_anio = df_f[df_f["anio"] == anio_mun]
-
-        if not df_anio.empty and "PIB_Municipal" in df_anio.columns:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("PIB total seleccionado", f"{df_anio['PIB_Municipal'].sum():.1f} mm")
-            c2.metric("Promedio municipal", f"{df_anio['PIB_Municipal'].mean():.1f} mm")
-            top_m = df_anio.loc[df_anio["PIB_Municipal"].idxmax()]
-            c3.metric("Mayor PIB", f"{top_m['municipio']}", f"{top_m['PIB_Municipal']:.1f} mm")
-            c4.metric("PIB per cápita medio", f"${df_anio['PIB_Per_Capita'].mean():,.0f}")
-
-        st.subheader("Evolución temporal")
-        if vars_mun:
-            long_m = df_f.melt(
-                id_vars=["municipio", "anio"],
-                value_vars=[v for v in vars_mun if v in df_f.columns],
-                var_name="Variable", value_name="Valor"
-            )
-            fig_ts = px.line(
-                long_m, x="anio", y="Valor", color="municipio", facet_col="Variable",
-                facet_col_wrap=2, markers=True, title="Trayectorias municipales (aproximaciones)"
-            )
-            fig_ts.update_layout(height=480)
-            st.plotly_chart(style_fig(fig_ts), use_container_width=True)
-
-        st.subheader(f"Comparación {anio_mun}")
-        if not df_anio.empty and vars_mun:
-            var_bar = st.selectbox("Variable para ranking", vars_mun, key="var_bar_mun")
-            df_bar = df_anio.sort_values(var_bar, ascending=True)
-            fig_bar = px.bar(
-                df_bar, x=var_bar, y="municipio", orientation="h",
-                color=var_bar, color_continuous_scale="Viridis",
-                title=f"{var_bar} · {anio_mun}"
-            )
-            fig_bar.update_layout(height=max(400, 22 * len(df_bar)))
-            st.plotly_chart(style_fig(fig_bar), use_container_width=True)
-
-        st.subheader("Estructura sectorial (heatmap)")
-        if not df_anio.empty:
-            heat = df_anio.set_index("municipio")[["VA_Primario", "VA_Secundario", "VA_Terciario"]]
-            heat_pct = heat.div(heat.sum(axis=1), axis=0) * 100
-            fig_h = px.imshow(
-                heat_pct, text_auto=".0f", color_continuous_scale="Teal",
-                title=f"Participación sectorial % · {anio_mun}", aspect="auto"
-            )
-            fig_h.update_layout(height=420)
-            st.plotly_chart(style_fig(fig_h), use_container_width=True)
-
-        with st.expander("Tabla de datos filtrados"):
-            st.dataframe(df_f.sort_values(["municipio", "anio"]), use_container_width=True, hide_index=True)
-
 elif seccion == "📑 Generador de Informes":
     st.markdown("## 📑 Generador de Informes de Política")
     st.markdown(
         """
         <div class="tip-box">
-        El informe se genera <b>automáticamente</b> con una interpretación sustancial basada en los datos disponibles.
-        Solo elige fuente, indicador, año y (opcional) municipios.
+        El informe se genera <b>automáticamente</b> con una interpretación sustancial basada en los datos oficiales disponibles.
         </div>
         """,
         unsafe_allow_html=True,
-    )
-
-    fuente = st.radio(
-        "Fuente de datos del informe",
-        ["Departamental (cualquier departamento)", "Municipal (Nariño)"],
-        horizontal=True
     )
 
     tab_r1, tab_r2, tab_r3, tab_r4 = st.tabs([
@@ -1663,348 +1395,175 @@ elif seccion == "📑 Generador de Informes":
         "4. Exportación",
     ])
 
-    if fuente == "Departamental (cualquier departamento)":
-        col0, col1, col2 = st.columns([1.2, 1.2, 1])
-        with col0:
-            depto_inf = st.selectbox(
-                "Departamento",
-                lista_deptos,
-                index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
-                key="depto_inf"
-            )
-        d_inf = DF_LONG[DF_LONG["departamento"] == depto_inf].copy()
-        if d_inf.empty:
-            st.warning(f"Sin datos de {depto_inf}.")
+    col0, col1, col2 = st.columns([1.2, 1.2, 1])
+    with col0:
+        depto_inf = st.selectbox(
+            "Departamento",
+            lista_deptos,
+            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
+            key="depto_inf"
+        )
+    d_inf = DF_LONG[DF_LONG["departamento"] == depto_inf].copy()
+    if d_inf.empty:
+        st.warning(f"Sin datos de {depto_inf}.")
+        st.stop()
+
+    with col1:
+        ind_inf = st.selectbox("Indicador principal", lista_inds, key="ind_inf")
+    with col2:
+        anios_disp = sorted(d_inf[d_inf["indicador"] == ind_inf]["anio"].unique())
+        if not anios_disp:
+            st.warning("No hay años disponibles para este indicador.")
             st.stop()
+        anio_inf = st.selectbox(
+            "Año de referencia", anios_disp,
+            index=len(anios_disp) - 1, key="anio_inf"
+        )
 
-        with col1:
-            ind_inf = st.selectbox("Indicador principal", lista_inds, key="ind_inf")
-        with col2:
-            anios_disp = sorted(d_inf[d_inf["indicador"] == ind_inf]["anio"].unique())
-            if not anios_disp:
-                st.warning("No hay años disponibles para este indicador.")
-                st.stop()
-            anio_inf = st.selectbox(
-                "Año de referencia", anios_disp,
-                index=len(anios_disp) - 1, key="anio_inf"
-            )
+    d_ind = d_inf[d_inf["indicador"] == ind_inf].sort_values("anio")
+    val_ult = float(d_ind.loc[d_ind["anio"] == anio_inf, "valor"].iloc[0]) if anio_inf in d_ind["anio"].values else None
 
-        d_ind = d_inf[d_inf["indicador"] == ind_inf].sort_values("anio")
-        val_ult = float(d_ind.loc[d_ind["anio"] == anio_inf, "valor"].iloc[0]) if anio_inf in d_ind["anio"].values else None
+    prev = d_ind[d_ind["anio"] == anio_inf - 1]["valor"]
+    delta_pct = None
+    if len(prev) and float(prev.iloc[0]) != 0 and val_ult is not None:
+        delta_pct = (val_ult - float(prev.iloc[0])) / float(prev.iloc[0]) * 100
 
-        prev = d_ind[d_ind["anio"] == anio_inf - 1]["valor"]
-        delta_pct = None
-        if len(prev) and float(prev.iloc[0]) != 0 and val_ult is not None:
-            delta_pct = (val_ult - float(prev.iloc[0])) / float(prev.iloc[0]) * 100
+    nac = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]["valor"].mean()
+    rank_df = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)].sort_values("valor", ascending=False).reset_index(drop=True)
+    pos_nar = rank_df[rank_df["departamento"] == depto_inf]
+    posicion = pos_nar.index[0] + 1 if not pos_nar.empty else None
 
-        nac = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]["valor"].mean()
-        rank_df = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)].sort_values("valor", ascending=False).reset_index(drop=True)
-        pos_nar = rank_df[rank_df["departamento"] == depto_inf]
-        posicion = pos_nar.index[0] + 1 if not pos_nar.empty else None
+    ultimos = d_ind.tail(5)
+    tendencia = "estable"
+    if len(ultimos) >= 3:
+        cambio = (ultimos["valor"].iloc[-1] - ultimos["valor"].iloc[0]) / ultimos["valor"].iloc[0] * 100
+        if cambio > 5:
+            tendencia = "ascendente"
+        elif cambio < -5:
+            tendencia = "descendente"
 
-        ultimos = d_ind.tail(5)
-        tendencia = "estable"
-        if len(ultimos) >= 3:
-            cambio = (ultimos["valor"].iloc[-1] - ultimos["valor"].iloc[0]) / ultimos["valor"].iloc[0] * 100
-            if cambio > 5:
-                tendencia = "ascendente"
-            elif cambio < -5:
-                tendencia = "descendente"
-
-        def generar_interpretacion_extensa():
-            txt = []
-            txt.append(f"### 1. Contexto del indicador **{ind_inf}** en {depto_inf} ({anio_inf})")
-            if val_ult is not None:
-                txt.append(
-                    f"En el año **{anio_inf}**, el valor registrado del indicador **{ind_inf}** para el departamento de {depto_inf} "
-                    f"fue de **{val_ult:,.1f}**. Este dato se enmarca dentro de la serie histórica disponible en la plataforma "
-                    f"y constituye el punto de referencia principal del presente informe."
-                )
-            if delta_pct is not None:
-                sentido = "un aumento" if delta_pct > 0 else "una disminución"
-                txt.append(
-                    f"Respecto al año inmediatamente anterior se observó {sentido} de **{abs(delta_pct):.1f}%**. "
-                    f"Esta variación interanual permite identificar el sentido reciente de la trayectoria del indicador "
-                    f"y constituye un insumo clave para la lectura de corto plazo."
-                )
-            if nac is not None and val_ult is not None:
-                rel = "por encima" if val_ult > nac else "por debajo"
-                diferencia = abs(val_ult - nac)
-                txt.append(
-                    f"Al contrastar el dato departamental con el promedio nacional del mismo año (**{nac:,.1f}**), "
-                    f"se observa que {depto_inf} se ubica **{rel}** de dicha referencia. "
-                    f"La diferencia absoluta es de aproximadamente **{diferencia:,.1f}** unidades del indicador."
-                )
-            if posicion is not None:
-                txt.append(
-                    f"En el ranking nacional de departamentos para el indicador **{ind_inf}** en **{anio_inf}**, "
-                    f"{depto_inf} ocupó la posición **{posicion}** de un total de **{len(rank_df)}** entidades territoriales. "
-                    f"Esta posición relativa aporta contexto sobre el desempeño comparado del departamento."
-                )
+    def generar_interpretacion_extensa():
+        txt = []
+        txt.append(f"### 1. Contexto del indicador **{ind_inf}** en {depto_inf} ({anio_inf})")
+        if val_ult is not None:
             txt.append(
-                f"La tendencia de los últimos años disponibles se caracteriza como **{tendencia}**. "
-                f"Este diagnóstico de tendencia se construye a partir de la variación acumulada de los últimos puntos "
-                f"de la serie y debe interpretarse con cautela cuando el número de observaciones es limitado."
+                f"En el año **{anio_inf}**, el valor registrado del indicador **{ind_inf}** para el departamento de {depto_inf} "
+                f"fue de **{val_ult:,.1f}**."
             )
-
-            txt.append("\n### 2. Lectura de política pública")
-            if "PIB" in ind_inf:
-                if delta_pct is not None and delta_pct < 0:
-                    txt.append(
-                        "La contracción observada en el PIB sugiere la necesidad de revisar los motores de crecimiento regional. "
-                        "Se recomienda priorizar el seguimiento a la inversión pública, el dinamismo de las exportaciones, "
-                        "el turismo y las cadenas agroindustriales, así como fortalecer la articulación entre el Plan de Desarrollo "
-                        "Departamental y los planes de desarrollo municipales. La identificación de cuellos de botella en "
-                        "infraestructura, capital humano y acceso a financiamiento resulta prioritaria."
-                    )
-                else:
-                    txt.append(
-                        "El desempeño del PIB sugiere continuidad en las estrategias de diversificación productiva y atracción "
-                        "de inversión. Se recomienda profundizar en los eslabones de mayor valor agregado, fortalecer la "
-                        "articulación público-privada y monitorear la sostenibilidad del crecimiento, prestando especial atención "
-                        "a la inclusión de municipios con menor peso económico relativo."
-                    )
-            elif "Homicidio" in ind_inf:
-                txt.append(
-                    "Los indicadores de seguridad requieren coordinación interinstitucional permanente, focalización territorial "
-                    "y seguimiento a factores de riesgo asociados a economías ilícitas, conflictos locales y dinámicas de frontera. "
-                    "Se recomienda articular las cifras departamentales con análisis municipales y con las estrategias de "
-                    "prevención y control definidas en los planes de seguridad y convivencia."
-                )
-            elif any(x in ind_inf for x in ["Educacion", "Matricula", "Matriculacion"]):
-                txt.append(
-                    "Los resultados educativos invitan a priorizar cobertura, calidad y retención, especialmente en zonas rurales "
-                    "y de frontera. Se recomienda alinear los recursos del Sistema General de Participaciones, los proyectos de "
-                    "inversión y las estrategias de permanencia escolar, así como fortalecer la información desagregada por "
-                    "municipio para orientar intervenciones focalizadas."
-                )
-            elif "DNP" in ind_inf or "Recursos" in ind_inf:
-                txt.append(
-                    "La evolución de los recursos de inversión sugiere evaluar la capacidad de ejecución, la focalización "
-                    "territorial y el impacto de los proyectos sobre el desarrollo económico local. Se recomienda contrastar "
-                    "la programación presupuestal con los resultados de gestión y con los indicadores de resultado asociados "
-                    "a las metas del Plan de Desarrollo."
-                )
-            else:
-                txt.append(
-                    "Se sugiere profundizar el análisis con series más largas, variables de control y contrastes municipales "
-                    "para orientar intervenciones de política pública. La combinación de evidencia cuantitativa con lectura "
-                    "cualitativa territorial resulta indispensable para la toma de decisiones informada."
-                )
-
-            txt.append("\n### 3. Consideraciones metodológicas")
+        if delta_pct is not None:
+            sentido = "un aumento" if delta_pct > 0 else "una disminución"
+            txt.append(f"Respecto al año anterior se observó {sentido} de **{abs(delta_pct):.1f}%**.")
+        if nac is not None and val_ult is not None:
+            rel = "por encima" if val_ult > nac else "por debajo"
             txt.append(
-                "Los datos departamentales provienen de fuentes oficiales (datos.gov.co). Las variaciones interanuales y "
-                "las posiciones relativas deben interpretarse considerando posibles cambios metodológicos en las series "
-                "originales, la cobertura temporal disponible y el carácter agregado del indicador. Para decisiones de "
-                "política se recomienda contrastar estos hallazgos con información oficial actualizada y con análisis "
-                "cualitativos de contexto territorial."
+                f"Al contrastar con el promedio nacional del mismo año (**{nac:,.1f}**), "
+                f"{depto_inf} se ubica **{rel}** de dicha referencia."
             )
-            return "\n\n".join(txt)
-
-        interpretacion = generar_interpretacion_extensa()
-
-        with tab_r1:
-            st.subheader("Resumen Ejecutivo")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric(f"{ind_inf}", f"{val_ult:,.1f}" if val_ult is not None else "—",
-                      f"{delta_pct:+.1f}%" if delta_pct is not None else None)
-            c2.metric("Promedio nacional", f"{nac:,.1f}" if nac is not None else "—")
-            c3.metric("Posición nacional", f"{posicion}°" if posicion else "—")
-            c4.metric("Año de referencia", str(anio_inf))
-            st.markdown(interpretacion)
-
-        with tab_r2:
-            st.subheader("Evolución Temporal")
-            if not d_ind.empty:
-                fig = px.line(d_ind, x="anio", y="valor", markers=True, title=f"{ind_inf} – {depto_inf}")
-                if len(d_ind) >= 3:
-                    z = np.polyfit(d_ind["anio"], d_ind["valor"], 1)
-                    trend = np.poly1d(z)(d_ind["anio"])
-                    fig.add_trace(go.Scatter(
-                        x=d_ind["anio"], y=trend, mode="lines",
-                        name="Tendencia lineal", line=dict(dash="dash", color="#A78BFA")
-                    ))
-                fig.add_vline(x=anio_inf, line_dash="dot", line_color="#22D3EE")
-                fig.update_layout(height=450)
-                st.plotly_chart(style_fig(fig), use_container_width=True)
-            else:
-                st.info("Sin serie para el indicador seleccionado.")
-
-        with tab_r3:
-            st.subheader("Análisis Comparativo (departamentos)")
-            d_comp = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]
-            if not d_comp.empty:
-                d_comp = d_comp.sort_values("valor", ascending=True)
-                fig = px.bar(
-                    d_comp, x="valor", y="departamento", orientation="h",
-                    color="valor", color_continuous_scale="Viridis",
-                    title=f"{ind_inf} · {anio_inf}"
-                )
-                fig.update_layout(height=max(420, 14 * len(d_comp)))
-                st.plotly_chart(style_fig(fig), use_container_width=True)
-            else:
-                st.info("Sin datos de comparación para ese año.")
-
-        with tab_r4:
-            st.subheader("Exportación de Reportes")
-            st.info("Informe generado automáticamente. Puedes añadir notas opcionales.")
-            notas_extra = st.text_area(
-                "Notas adicionales del analista (opcional)",
-                height=100,
-                placeholder="Espacio libre para comentarios propios..."
+        if posicion is not None:
+            txt.append(
+                f"En el ranking nacional de **{ind_inf}** en **{anio_inf}**, "
+                f"{depto_inf} ocupó la posición **{posicion}** de **{len(rank_df)}** entidades territoriales."
             )
+        txt.append(f"La tendencia de los últimos años se caracteriza como **{tendencia}**.")
+        txt.append("\n### 2. Lectura de política pública")
+        txt.append(
+            "Se sugiere profundizar el análisis con series más largas y contrastes territoriales "
+            "para orientar intervenciones de política pública. La combinación de evidencia cuantitativa "
+            "con lectura cualitativa territorial resulta indispensable."
+        )
+        txt.append("\n### 3. Consideraciones metodológicas")
+        txt.append(
+            "Los datos departamentales provienen de fuentes oficiales (datos.gov.co). "
+            "Las variaciones interanuales y las posiciones relativas deben interpretarse considerando "
+            "posibles cambios metodológicos en las series originales y la cobertura temporal disponible."
+        )
+        return "\n\n".join(txt)
 
-            md_lines = [
-                f"# Informe de Política – Observatorio Económico y Social",
-                f"**Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"**Territorio:** {depto_inf}",
-                f"**Indicador:** {ind_inf}",
-                f"**Año de referencia:** {anio_inf}",
-                "",
-                "## 1. Resumen Ejecutivo",
-                f"- Valor en {depto_inf} ({anio_inf}): **{val_ult:,.1f}**" if val_ult is not None else "- Valor: N/D",
-                f"- Variación interanual: **{delta_pct:+.1f}%**" if delta_pct is not None else "- Variación: N/D",
-                f"- Promedio nacional: **{nac:,.1f}**" if nac is not None else "",
-                f"- Posición nacional: **{posicion}°** de {len(rank_df)}" if posicion else "",
-                f"- Tendencia reciente: **{tendencia}**",
-                "",
-                "## 2. Interpretación automática",
-                interpretacion,
-                "",
-            ]
-            if notas_extra.strip():
-                md_lines += ["## 3. Notas del analista", notas_extra, ""]
-            md_lines += [
-                "## Fuentes",
-                "- datos.gov.co (APIs SODA) – datos oficiales del Gobierno de Colombia",
-                "- Observatorio Económico y Social – Universidad de Nariño",
-                "",
-                "---",
-                "Informe generado automáticamente a partir de datos oficiales y reglas de interpretación del Observatorio.",
-            ]
-            md_content = "\n".join(md_lines)
+    interpretacion = generar_interpretacion_extensa()
 
-            csv_buf = d_ind.to_csv(index=False).encode("utf-8")
-            c1, c2 = st.columns(2)
-            c1.download_button(
-                "⬇️ Descargar CSV (serie)",
-                data=csv_buf,
-                file_name=f"informe_{ind_inf}_{depto_inf}_{anio_inf}.csv",
-                mime="text/csv",
+    with tab_r1:
+        st.subheader("Resumen Ejecutivo")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(f"{ind_inf}", f"{val_ult:,.1f}" if val_ult is not None else "—",
+                  f"{delta_pct:+.1f}%" if delta_pct is not None else None)
+        c2.metric("Promedio nacional", f"{nac:,.1f}" if nac is not None else "—")
+        c3.metric("Posición nacional", f"{posicion}°" if posicion else "—")
+        c4.metric("Año de referencia", str(anio_inf))
+        st.markdown(interpretacion)
+
+    with tab_r2:
+        st.subheader("Evolución Temporal")
+        if not d_ind.empty:
+            fig = px.line(d_ind, x="anio", y="valor", markers=True, title=f"{ind_inf} – {depto_inf}")
+            if len(d_ind) >= 3:
+                z = np.polyfit(d_ind["anio"], d_ind["valor"], 1)
+                trend = np.poly1d(z)(d_ind["anio"])
+                fig.add_trace(go.Scatter(
+                    x=d_ind["anio"], y=trend, mode="lines",
+                    name="Tendencia lineal", line=dict(dash="dash", color="#A78BFA")
+                ))
+            fig.add_vline(x=anio_inf, line_dash="dot", line_color="#22D3EE")
+            fig.update_layout(height=450)
+            st.plotly_chart(style_fig(fig), use_container_width=True)
+
+    with tab_r3:
+        st.subheader("Análisis Comparativo (departamentos)")
+        d_comp = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]
+        if not d_comp.empty:
+            d_comp = d_comp.sort_values("valor", ascending=True)
+            fig = px.bar(
+                d_comp, x="valor", y="departamento", orientation="h",
+                color="valor", color_continuous_scale="Viridis",
+                title=f"{ind_inf} · {anio_inf}"
             )
-            c2.download_button(
-                "⬇️ Descargar Informe Markdown",
-                data=md_content.encode("utf-8"),
-                file_name=f"informe_politica_{ind_inf}_{anio_inf}_{datetime.now().strftime('%Y%m%d')}.md",
-                mime="text/markdown",
-            )
-            st.markdown("### Vista previa del informe")
-            st.markdown(md_content)
+            fig.update_layout(height=max(420, 14 * len(d_comp)))
+            st.plotly_chart(style_fig(fig), use_container_width=True)
 
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            muns_inf = st.multiselect(
-                "Municipios para el informe", lista_municipios,
-                default=["Pasto", "Ipiales", "Tumaco"], key="muns_inf"
-            )
-        with col2:
-            anio_inf_m = st.selectbox("Año de referencia", list(range(2018, 2025)), index=5, key="anio_inf_m")
-
-        df_mi = DF_MUN[(DF_MUN["municipio"].isin(muns_inf)) & (DF_MUN["anio"] == anio_inf_m)] if muns_inf else pd.DataFrame()
-
-        def interp_municipal():
-            if df_mi.empty:
-                return "No hay datos para los municipios y año seleccionados."
-            total = df_mi["PIB_Municipal"].sum()
-            top = df_mi.loc[df_mi["PIB_Municipal"].idxmax()]
-            txt = [
-                f"### Panorama municipal de Nariño ({anio_inf_m})",
-                f"Los municipios seleccionados concentran un PIB agregado aproximado de **{total:,.1f}** miles de millones de COP.",
-                f"El municipio de mayor peso es **{top['municipio']}** con **{top['PIB_Municipal']:,.1f}** mm COP "
-                f"y un PIB per cápita aproximado de **${top['PIB_Per_Capita']:,.0f}**.",
-                "",
-                "### Estructura productiva",
-                "Se observa heterogeneidad territorial: los centros urbanos (Pasto, Ipiales) tienen mayor peso del sector terciario, "
-                "mientras que municipios de frontera y costa mantienen mayor participación del sector primario.",
-                "",
-                "### Orientación de política",
-                "Se recomienda fortalecer cadenas de valor locales, mejorar conectividad y focalizar inversión pública en los municipios "
-                "con menor PIB per cápita para reducir brechas intra-departamentales. Estas cifras constituyen aproximaciones "
-                "de alta fidelidad orientadas al análisis exploratorio y a la discusión de política."
-            ]
-            return "\n\n".join(txt)
-
-        interpretacion_m = interp_municipal()
-
-        with tab_r1:
-            st.subheader("Resumen Ejecutivo Municipal")
-            if not df_mi.empty:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("PIB agregado", f"{df_mi['PIB_Municipal'].sum():.1f} mm")
-                c2.metric("PIB per cápita medio", f"${df_mi['PIB_Per_Capita'].mean():,.0f}")
-                top = df_mi.loc[df_mi["PIB_Municipal"].idxmax()]
-                c3.metric("Municipio líder", top["municipio"], f"{top['PIB_Municipal']:.1f} mm")
-                st.markdown(interpretacion_m)
-            else:
-                st.info("Selecciona al menos un municipio.")
-
-        with tab_r2:
-            st.subheader("Evolución Temporal Municipal")
-            if muns_inf:
-                df_ts = DF_MUN[DF_MUN["municipio"].isin(muns_inf)]
-                fig = px.line(df_ts, x="anio", y="PIB_Municipal", color="municipio", markers=True, title="PIB Municipal (aproximaciones)")
-                fig.add_vline(x=anio_inf_m, line_dash="dot", line_color="#22D3EE")
-                fig.update_layout(height=440)
-                st.plotly_chart(style_fig(fig), use_container_width=True)
-
-        with tab_r3:
-            st.subheader("Comparación sectorial")
-            if not df_mi.empty:
-                long_s = df_mi.melt(
-                    id_vars=["municipio"],
-                    value_vars=["VA_Primario", "VA_Secundario", "VA_Terciario"],
-                    var_name="Sector", value_name="Valor"
-                )
-                fig = px.bar(long_s, x="municipio", y="Valor", color="Sector", barmode="stack",
-                             title=f"Estructura sectorial · {anio_inf_m}")
-                fig.update_layout(height=420)
-                st.plotly_chart(style_fig(fig), use_container_width=True)
-
-        with tab_r4:
-            st.subheader("Exportación")
-            st.info("Informe generado automáticamente. Puedes añadir notas opcionales.")
-            notas_m = st.text_area("Notas adicionales (opcional)", height=80, key="obs_m")
-            md_m = [
-                "# Informe Municipal – Valor Agregado Nariño",
-                f"**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"**Año de referencia:** {anio_inf_m}",
-                f"**Municipios:** {', '.join(muns_inf) if muns_inf else 'N/A'}",
-                "",
-                "## Interpretación",
-                interpretacion_m,
-                "",
-            ]
-            if notas_m.strip():
-                md_m += ["## Notas del analista", notas_m, ""]
-            md_m += ["---", "Observatorio Económico y Social · Universidad de Nariño"]
-            md_m_content = "\n".join(md_m)
-            csv_m = (df_mi.to_csv(index=False) if not df_mi.empty else "").encode("utf-8")
-            c1, c2 = st.columns(2)
-            c1.download_button("⬇️ CSV municipal", data=csv_m, file_name=f"informe_municipal_{anio_inf_m}.csv", mime="text/csv")
-            c2.download_button("⬇️ Informe Markdown", data=md_m_content.encode("utf-8"),
-                               file_name=f"informe_municipal_{anio_inf_m}_{datetime.now().strftime('%Y%m%d')}.md", mime="text/markdown")
-            st.markdown("### Vista previa")
-            st.markdown(md_m_content)
+    with tab_r4:
+        st.subheader("Exportación de Reportes")
+        notas_extra = st.text_area("Notas adicionales del analista (opcional)", height=100)
+        md_lines = [
+            f"# Informe de Política – Observatorio Económico y Social",
+            f"**Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"**Territorio:** {depto_inf}",
+            f"**Indicador:** {ind_inf}",
+            f"**Año de referencia:** {anio_inf}",
+            "",
+            "## 1. Resumen Ejecutivo",
+            f"- Valor en {depto_inf} ({anio_inf}): **{val_ult:,.1f}**" if val_ult is not None else "- Valor: N/D",
+            f"- Variación interanual: **{delta_pct:+.1f}%**" if delta_pct is not None else "- Variación: N/D",
+            f"- Promedio nacional: **{nac:,.1f}**" if nac is not None else "",
+            f"- Posición nacional: **{posicion}°** de {len(rank_df)}" if posicion else "",
+            f"- Tendencia reciente: **{tendencia}**",
+            "",
+            "## 2. Interpretación automática",
+            interpretacion,
+            "",
+        ]
+        if notas_extra.strip():
+            md_lines += ["## 3. Notas del analista", notas_extra, ""]
+        md_lines += [
+            "## Fuentes",
+            "- datos.gov.co (APIs SODA) – datos oficiales del Gobierno de Colombia",
+            "- Observatorio Económico y Social – Universidad de Nariño",
+        ]
+        md_content = "\n".join(md_lines)
+        csv_buf = d_ind.to_csv(index=False).encode("utf-8")
+        c1, c2 = st.columns(2)
+        c1.download_button("⬇️ Descargar CSV (serie)", data=csv_buf,
+                           file_name=f"informe_{ind_inf}_{depto_inf}_{anio_inf}.csv", mime="text/csv")
+        c2.download_button("⬇️ Descargar Informe Markdown", data=md_content.encode("utf-8"),
+                           file_name=f"informe_politica_{ind_inf}_{anio_inf}_{datetime.now().strftime('%Y%m%d')}.md",
+                           mime="text/markdown")
+        st.markdown("### Vista previa del informe")
+        st.markdown(md_content)
 
 elif seccion == "💬 Chatbot del Observatorio":
     st.markdown("## 💬 Chatbot del Observatorio Económico")
     st.markdown(
         """
         <div class="tip-box">
-        Asistente contextual del Observatorio. Puedes consultar indicadores de cualquier departamento,
-        municipios de Nariño (aproximaciones) e indicar el año que solicites.
+        Asistente contextual. Puedes consultar indicadores de cualquier departamento e indicar el año.
         </div>
         """,
         unsafe_allow_html=True,
@@ -2016,8 +1575,8 @@ elif seccion == "💬 Chatbot del Observatorio":
                 "role": "assistant",
                 "content": (
                     "Hola. Soy el asistente del **Observatorio Económico y Social**. "
-                    "Puedo ayudarte con datos de todos los departamentos de Colombia (PIB, seguridad, inversión DNP, educación) "
-                    "y con el panel municipal de Nariño (Pasto, Ipiales, Tumaco, etc. – aproximaciones). ¿Qué deseas consultar?"
+                    "Puedo ayudarte con datos oficiales de todos los departamentos de Colombia "
+                    "(PIB, seguridad, inversión DNP, educación). ¿Qué deseas consultar?"
                 ),
             }
         ]
@@ -2030,10 +1589,9 @@ elif seccion == "💬 Chatbot del Observatorio":
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-
         with st.chat_message("assistant"):
             with st.spinner("Analizando…"):
-                resp = chatbot_respuesta(prompt, DF_LONG, DF_MUN, lista_inds, lista_deptos)
+                resp = chatbot_respuesta(prompt, DF_LONG, lista_inds, lista_deptos)
             st.markdown(resp)
         st.session_state.messages.append({"role": "assistant", "content": resp})
 
@@ -2053,14 +1611,15 @@ elif seccion == "©️ Derechos y Créditos":
                 parcial con fines comerciales sin autorización expresa.
             </p>
 
-            <h3>Datos y licencias</h3>
+            <h3>Datos y fuentes</h3>
             <ul>
-                <li><b>datos.gov.co</b> – Datos abiertos del Gobierno de Colombia (licencias de uso
-                    público conforme a la política de datos abiertos).</li>
-                <li><b>DANE y entidades oficiales</b> – Referencia metodológica de cuentas regionales
-                    y valor agregado. En el módulo municipal se emplean <b>aproximaciones de cifras</b>
-                    de alta fidelidad orientadas al análisis exploratorio y a la discusión de política (solo Nariño).</li>
-                <li><b>GeoJSON departamental</b> – Capa cartográfica de uso abierto.</li>
+                <li><b>datos.gov.co</b> – Datos abiertos del Gobierno de Colombia (APIs SODA).</li>
+                <li>Indicadores cargados: PIB departamental (precios constantes), Homicidios, 
+                    Recursos DNP, Cobertura y Matrícula educativa, Matrícula de Educación Superior.</li>
+                <li>Solo se incluyen los 33 territorios oficiales (32 departamentos + Bogotá D.C.).</li>
+                <li>Años filtrados entre 2005 y 2025 para garantizar calidad y coherencia.</li>
+                <li>No se incluyen datos municipales porque no existe una fuente pública estable 
+                    y completa de valor agregado municipal para todos los departamentos en el formato requerido.</li>
             </ul>
 
             <h3>Desarrolladores</h3>
@@ -2069,19 +1628,11 @@ elif seccion == "©️ Derechos y Créditos":
             </p>
             <p class="meta">Universidad de Nariño</p>
 
-            <h3>Metadatos de la plataforma</h3>
-            <ul>
-                <li>Nombre: Observatorio Económico y Social</li>
-                <li>Enfoque territorial: Todos los departamentos de Colombia (prioridad Nariño) + 64 municipios de Nariño</li>
-                <li>Stack: Streamlit · Plotly · scikit-learn · statsmodels · libpysal / esda</li>
-            </ul>
-
             <h3>Aviso de uso</h3>
             <p>
                 Esta herramienta está orientada a investigación, docencia y apoyo a la formulación
-                de política pública. Los resultados de modelos (VAR, ML, simulaciones) y las
-                aproximaciones municipales deben interpretarse con precaución y contrastarse con
-                fuentes oficiales antes de tomar decisiones.
+                de política pública. Los resultados de modelos (VAR, ML, simulaciones) deben 
+                interpretarse con precaución y contrastarse con fuentes oficiales antes de tomar decisiones.
             </p>
 
             <p class="meta" style="margin-top:1.5rem;">
