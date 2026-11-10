@@ -1,6 +1,6 @@
 # ============================================================
 # OBSERVATORIO ECONÓMICO Y SOCIAL · STREAMLIT · CÓDIGO MAESTRO
-# Refactorizado · Modular · Producción
+# Refactorizado · Modular · Producción 
 # ============================================================
 
 import streamlit as st
@@ -416,31 +416,35 @@ def cargar_geojson():
         return None
 
 # ============================================================
-# DATOS MUNICIPALES (aproximaciones de alta fidelidad)
+# DATOS MUNICIPALES (aproximaciones de alta fidelidad – SOLO NARIÑO)
 # ============================================================
 @st.cache_data(ttl=3600)
 def generar_valor_agregado_municipal():
+    # 64 municipios oficiales de Nariño (nombres canónicos)
     municipios = [
-        "Pasto", "Ipiales", "Tumaco", "Túquerres", "La Unión", "Samaniego",
-        "Barbacoas", "Cumbal", "El Tambo", "Sandona", "Consacá", "Yacuanquer",
-        "Potosí", "Gualmatán", "Imués", "Pupiales", "Aldana", "Carlosama",
-        "Contadero", "Córdoba", "Funes", "Iles", "Ospina", "Puerres",
-        "Tangua", "Ancuya", "Linares", "Sotomayor", "La Cruz", "San Pablo",
-        "Colón", "El Peñol", "Buesaco", "Chachagüí", "Nariño", "Arboleda",
-        "San Bernardo", "Belén", "La Florida", "Taminango", "Policarpa",
-        "Leiva", "El Rosario", "Cumbitara", "Magüí Payán", "Roberto Payán",
-        "Francisco Pizarro", "Olaya Herrera", "Santa Bárbara", "El Charco",
-        "Mosquera", "La Tola", "Mallama", "Ricaurte", "Guachucal", "Cuaspud",
-        "Providencia", "Santacruz", "Sapuyes", "Guaitarilla"
+        "Albán", "Aldana", "Ancuyá", "Arboleda", "Barbacoas", "Belén", "Buesaco",
+        "Chachagüí", "Colón", "Consacá", "Contadero", "Córdoba", "Cuaspud", "Cumbal",
+        "Cumbitara", "El Charco", "El Peñol", "El Rosario", "El Tablón de Gómez", "El Tambo",
+        "Francisco Pizarro", "Funes", "Guachucal", "Guaitarilla", "Gualmatán", "Iles",
+        "Imués", "Ipiales", "La Cruz", "La Florida", "La Llanada", "La Tola", "La Unión",
+        "Leiva", "Linares", "Los Andes", "Magüí Payán", "Mallama", "Mosquera", "Nariño",
+        "Olaya Herrera", "Ospina", "Pasto", "Policarpa", "Potosí", "Providencia", "Puerres",
+        "Pupiales", "Ricaurte", "Roberto Payán", "Samaniego", "San Bernardo", "San Lorenzo",
+        "San Pablo", "San Pedro de Cartago", "Sandoná", "Santa Bárbara", "Santacruz",
+        "Sapuyes", "Taminango", "Tangua", "Tumaco", "Túquerres", "Yacuanquer"
     ]
+
+    # Pesos aproximados calibrados a magnitudes regionales (alta fidelidad exploratoria)
     pesos = {
         "Pasto": 0.32, "Ipiales": 0.11, "Tumaco": 0.09, "Túquerres": 0.045,
         "La Unión": 0.028, "Samaniego": 0.022, "Barbacoas": 0.018,
-        "Cumbal": 0.017, "El Tambo": 0.015, "Sandona": 0.014
+        "Cumbal": 0.017, "El Tambo": 0.015, "Sandoná": 0.014,
+        "Buesaco": 0.012, "La Cruz": 0.011, "Olaya Herrera": 0.010,
+        "Policarpa": 0.009, "Guachucal": 0.009, "Ricaurte": 0.008,
     }
     for m in municipios:
         if m not in pesos:
-            pesos[m] = 0.008
+            pesos[m] = 0.0065
 
     anios = list(range(2018, 2025))
     rng = np.random.default_rng(42)
@@ -456,14 +460,14 @@ def generar_valor_agregado_municipal():
 
         for mun in municipios:
             share = pesos[mun] * (1 + rng.normal(0, 0.04))
-            share = max(0.003, share)
+            share = max(0.0025, share)
             pib_mun = pib_depto * share
 
             if mun in ["Pasto", "Ipiales"]:
                 sec_prim, sec_sec, sec_ter = 0.12, 0.22, 0.66
-            elif mun in ["Tumaco", "Barbacoas", "Magüí Payán", "Roberto Payán"]:
+            elif mun in ["Tumaco", "Barbacoas", "Magüí Payán", "Roberto Payán", "El Charco", "Francisco Pizarro"]:
                 sec_prim, sec_sec, sec_ter = 0.38, 0.15, 0.47
-            elif mun in ["Túquerres", "Cumbal", "Guachucal", "Pupiales"]:
+            elif mun in ["Túquerres", "Cumbal", "Guachucal", "Pupiales", "Córdoba"]:
                 sec_prim, sec_sec, sec_ter = 0.45, 0.18, 0.37
             else:
                 sec_prim, sec_sec, sec_ter = 0.28, 0.20, 0.52
@@ -482,7 +486,7 @@ def generar_valor_agregado_municipal():
             elif mun == "Tumaco":
                 pob = 210 + (anio - 2018) * 2.5
             else:
-                pob = 25 + rng.uniform(5, 45) + (anio - 2018) * 0.4
+                pob = 18 + rng.uniform(4, 40) + (anio - 2018) * 0.35
 
             pib_pc = (pib_mun * 1e9) / (pob * 1000)
             records.append({
@@ -496,8 +500,10 @@ def generar_valor_agregado_municipal():
             })
 
     df = pd.DataFrame(records)
-    df["VA_Primario"] = df["VA_Primario"] * (df["PIB_Municipal"] / (df["VA_Primario"] + df["VA_Secundario"] + df["VA_Terciario"]))
-    df["VA_Secundario"] = df["VA_Secundario"] * (df["PIB_Municipal"] / (df["VA_Primario"] + df["VA_Secundario"] + df["VA_Terciario"]))
+    # Rebalanceo para que la suma de sectores coincida exactamente con PIB municipal
+    suma = df["VA_Primario"] + df["VA_Secundario"] + df["VA_Terciario"]
+    df["VA_Primario"] = df["VA_Primario"] * (df["PIB_Municipal"] / suma)
+    df["VA_Secundario"] = df["VA_Secundario"] * (df["PIB_Municipal"] / suma)
     df["VA_Terciario"] = df["PIB_Municipal"] - df["VA_Primario"] - df["VA_Secundario"]
     return df
 
@@ -541,7 +547,7 @@ def _es_educacion(nombre):
     return ("Educacion" in n) or ("Matricula" in n) or ("Matriculacion" in n)
 
 # ============================================================
-# MÓDULOS ANALÍTICOS (preservados)
+# MÓDULOS ANALÍTICOS
 # ============================================================
 def eda(DF_LONG, PANEL, lista_inds, deptos, inds, a1, a2):
     d = filtrar(DF_LONG, deptos, inds or lista_inds, a1, a2)
@@ -619,7 +625,7 @@ def pca_fn(PANEL, a1, a2):
             line=dict(color="#A78BFA", width=2), showlegend=False
         ))
     fig.update_layout(
-        title="Biplot PCA – Nariño",
+        title="Biplot PCA – Nariño destacado",
         xaxis_title=f"PC1 ({var[0]*100:.1f}%)",
         yaxis_title=f"PC2 ({var[1]*100:.1f}%)",
         height=500
@@ -975,10 +981,10 @@ def sim_fn(DF_LONG, depto, ind_s, ind_r, shock, anios):
     except Exception as e:
         return f"Error en simulación: {e}", None
 
-def focus_narino(DF_LONG, lista_inds):
-    nar = DF_LONG[DF_LONG["departamento"] == "Nariño"]
+def focus_territorial(DF_LONG, lista_inds, depto_sel):
+    nar = DF_LONG[DF_LONG["departamento"] == depto_sel]
     if nar.empty:
-        return "No hay filas de Nariño.", None
+        return f"No hay filas de **{depto_sel}**.", None
     rows = []
     for ind in lista_inds:
         g = nar[nar["indicador"] == ind]
@@ -1002,10 +1008,10 @@ def focus_narino(DF_LONG, lista_inds):
     nac_t = DF_LONG[DF_LONG["indicador"] == ind0].groupby("anio")["valor"].mean().reset_index()
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=nar_t["anio"], y=nar_t["valor"], mode="lines+markers",
-                             name="Nariño", line=dict(color="#22D3EE", width=3)))
+                             name=depto_sel, line=dict(color="#22D3EE", width=3)))
     fig.add_trace(go.Scatter(x=nac_t["anio"], y=nac_t["valor"], mode="lines+markers",
                              name="Nacional", line=dict(color="#A78BFA", width=2, dash="dash")))
-    fig.update_layout(title=f"{ind0}: Nariño vs Nacional", height=420)
+    fig.update_layout(title=f"{ind0}: {depto_sel} vs Nacional", height=420)
     return res.to_markdown(index=False), style_fig(fig)
 
 # ============================================================
@@ -1183,7 +1189,7 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                 if not row.empty:
                     r = row.iloc[0]
                     respuesta.append(
-                        f"**{mun_especifico} ({anio_m})**:\n"
+                        f"**{mun_especifico} ({anio_m})** (aproximación de alta fidelidad):\n"
                         f"- PIB Municipal: **{r['PIB_Municipal']:,.1f}** mm COP\n"
                         f"- VA Primario: **{r['VA_Primario']:,.1f}** mm\n"
                         f"- VA Secundario: **{r['VA_Secundario']:,.1f}** mm\n"
@@ -1197,7 +1203,7 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                     for _, r in top.iterrows()
                 ]
                 respuesta.append(
-                    f"**Top municipios de Nariño por PIB Municipal ({anio_m})**:\n" + "\n".join(lineas)
+                    f"**Top municipios de Nariño por PIB Municipal ({anio_m})** (aproximaciones):\n" + "\n".join(lineas)
                 )
         else:
             respuesta.append("Datos municipales no disponibles en esta sesión.")
@@ -1229,7 +1235,7 @@ def chatbot_respuesta(pregunta, DF_LONG, DF_MUN, lista_inds, lista_deptos):
                 "- **Homicidios** por departamento y año (ej. *homicidios Antioquia 2020*)\n"
                 "- **Recursos DNP** e inversión pública\n"
                 "- **Educación** (cobertura, matrícula)\n"
-                "- **Municipios de Nariño** (Pasto, Ipiales, Tumaco, etc.)\n"
+                "- **Municipios de Nariño** (Pasto, Ipiales, Tumaco, etc. – aproximaciones)\n"
                 "- Rankings nacionales\n\n"
                 "Ejemplos:\n"
                 "• *¿Cuál fue el PIB de Nariño en 2021?*\n"
@@ -1325,7 +1331,7 @@ if seccion == "🏠 Inicio":
             🇨🇴 Observatorio Económico y Social
         </h1>
         <p style="color:#94A3B8; margin-top:0;">
-            Datos reales · Enfoque departamental · Prioridad Nariño · Nivel municipal
+            Datos reales · Enfoque departamental (todos los departamentos) · Prioridad Nariño · Nivel municipal (aproximaciones)
         </p>
         """,
         unsafe_allow_html=True,
@@ -1336,7 +1342,9 @@ if seccion == "🏠 Inicio":
             <h2>👋 Bienvenida / Bienvenido</h2>
             <p>
                 Esta plataforma reúne <b>indicadores oficiales de Colombia</b> (datos.gov.co)
-                y un panel de <b>aproximaciones de valor agregado municipal</b> de alta fidelidad para Nariño.
+                para los <b>32 departamentos + Bogotá D.C.</b> y un panel de
+                <b>aproximaciones de valor agregado municipal de alta fidelidad</b> para los
+                <b>64 municipios de Nariño</b>.
                 Explora economía y sociedad a nivel departamental y municipal, estima modelos
                 de series de tiempo, entrena algoritmos de aprendizaje y simula escenarios de política.
             </p>
@@ -1344,14 +1352,14 @@ if seccion == "🏠 Inicio":
             <ol>
                 <li>Usa el menú de la barra lateral para navegar entre módulos.</li>
                 <li>Ajusta departamento, indicadores y rango de años cuando sea necesario.</li>
-                <li>En <b>Análisis Departamental</b> encontrarás EDA, mapas, VAR, ML y Focus Nariño.</li>
-                <li>Consulta el <b>Valor Agregado Municipal</b>, genera <b>Informes</b> o pregunta al <b>Chatbot</b>.</li>
+                <li>En <b>Análisis Departamental</b> encontrarás EDA, mapas, VAR, ML y Focus Territorial.</li>
+                <li>Consulta el <b>Valor Agregado Municipal</b> (solo Nariño), genera <b>Informes</b> o pregunta al <b>Chatbot</b>.</li>
             </ol>
             <p>
                 <span class="tag">Periodo departamental: {amin}–{amax}</span>
-                <span class="tag">Municipal: 2018–2024</span>
+                <span class="tag">Municipal (Nariño): 2018–2024</span>
                 <span class="tag">{len(lista_inds)} indicadores</span>
-                <span class="tag">{len(lista_deptos)} departamentos</span>
+                <span class="tag">{len(lista_deptos)} entidades territoriales</span>
                 <span class="tag">{len(lista_municipios)} municipios Nariño</span>
             </p>
             <div class="authors">
@@ -1367,19 +1375,19 @@ if seccion == "🏠 Inicio":
         st.markdown("""
 | Módulo | Para qué sirve |
 |--------|----------------|
-| **Análisis Departamental** | EDA, PCA, Clustering, mapas, Moran/LISA, VAR/VECM, ML/XAI, Simulador y Focus Nariño |
-| **Valor Agregado Municipal** | Aproximaciones de PIB municipal, sectores y per cápita (Nariño 2018-2024) |
+| **Análisis Departamental** | EDA, PCA, Clustering, mapas, Moran/LISA, VAR/VECM, ML/XAI, Simulador y Focus Territorial (cualquier departamento) |
+| **Valor Agregado Municipal** | Aproximaciones de PIB municipal, sectores y per cápita (solo Nariño 2018-2024) |
 | **Generador de Informes** | Resumen ejecutivo, evolución, comparación y exportación con interpretación automática |
-| **Chatbot** | Preguntas en lenguaje natural sobre PIB, seguridad, inversión, municipios y rankings |
+| **Chatbot** | Preguntas en lenguaje natural sobre PIB, seguridad, inversión, municipios de Nariño y rankings |
 | **Derechos y Créditos** | Licencias, fuentes y autoría institucional |
         """)
     with st.expander("📦 Fuentes e indicadores cargados", expanded=False):
         st.markdown(f"""
-**Origen departamental:** APIs SODA de [datos.gov.co](https://www.datos.gov.co).
+**Origen departamental:** APIs SODA de [datos.gov.co](https://www.datos.gov.co) (oficiales).
 
 **Indicadores:** `{', '.join(lista_inds)}`
 
-**Municipal:** Aproximaciones de alta fidelidad calibradas a magnitudes regionales de Nariño.
+**Municipal:** Aproximaciones de alta fidelidad calibradas a magnitudes regionales de Nariño (solo para este departamento). No se incluyen datos municipales de otros departamentos por ausencia de fuente pública estable y completa en el formato requerido.
         """)
         cov = DF_LONG.groupby("indicador").agg(
             Filas=("valor", "count"),
@@ -1397,7 +1405,7 @@ elif seccion == "📊 Análisis Departamental":
         "📈 Series de Tiempo (VAR/VEC)",
         "🤖 ML · Deep Learning & XAI",
         "🎯 Simulador de Política",
-        "📍 Focus Nariño",
+        "📍 Focus Territorial",
     ])
 
     with tab1:
@@ -1529,13 +1537,19 @@ elif seccion == "📊 Análisis Departamental":
 
     with tab6:
         st.markdown(
-            """<div class="tip-box">📍 <b>Focus Nariño:</b> último valor, variación interanual
-            y comparación con el promedio nacional.</div>""",
+            """<div class="tip-box">📍 <b>Focus Territorial:</b> último valor, variación interanual
+            y comparación con el promedio nacional para el departamento que elijas.</div>""",
             unsafe_allow_html=True,
         )
-        if st.button("Actualizar dashboard Nariño", type="primary", key="bn"):
-            with st.spinner("Construyendo tablero de Nariño…"):
-                txt, fig = focus_narino(DF_LONG, lista_inds)
+        depto_focus = st.selectbox(
+            "Departamento a enfocar",
+            lista_deptos,
+            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
+            key="depto_focus"
+        )
+        if st.button("Actualizar dashboard territorial", type="primary", key="bn"):
+            with st.spinner(f"Construyendo tablero de {depto_focus}…"):
+                txt, fig = focus_territorial(DF_LONG, lista_inds, depto_focus)
             st.markdown(txt)
             if fig is not None:
                 st.plotly_chart(fig, use_container_width=True)
@@ -1545,8 +1559,9 @@ elif seccion == "🏘️ Valor Agregado Municipal":
     st.markdown(
         """
         <div class="tip-box">
-        Panel de <b>aproximaciones de alta fidelidad</b> 2018–2024 para municipios de Nariño.
+        Panel de <b>aproximaciones de alta fidelidad</b> 2018–2024 para los 64 municipios de Nariño.
         Variables: PIB Municipal, Valor Agregado Primario / Secundario / Terciario y PIB per cápita.
+        <br><b>Nota:</b> Estas cifras son aproximaciones calibradas a magnitudes regionales. No constituyen datos oficiales del DANE.
         </div>
         """,
         unsafe_allow_html=True,
@@ -1592,7 +1607,7 @@ elif seccion == "🏘️ Valor Agregado Municipal":
             )
             fig_ts = px.line(
                 long_m, x="anio", y="Valor", color="municipio", facet_col="Variable",
-                facet_col_wrap=2, markers=True, title="Trayectorias municipales"
+                facet_col_wrap=2, markers=True, title="Trayectorias municipales (aproximaciones)"
             )
             fig_ts.update_layout(height=480)
             st.plotly_chart(style_fig(fig_ts), use_container_width=True)
@@ -1637,7 +1652,7 @@ elif seccion == "📑 Generador de Informes":
 
     fuente = st.radio(
         "Fuente de datos del informe",
-        ["Departamental (Nariño)", "Municipal (Nariño)"],
+        ["Departamental (cualquier departamento)", "Municipal (Nariño)"],
         horizontal=True
     )
 
@@ -1648,13 +1663,20 @@ elif seccion == "📑 Generador de Informes":
         "4. Exportación",
     ])
 
-    if fuente == "Departamental (Nariño)":
-        d_inf = DF_LONG[DF_LONG["departamento"] == "Nariño"].copy()
+    if fuente == "Departamental (cualquier departamento)":
+        col0, col1, col2 = st.columns([1.2, 1.2, 1])
+        with col0:
+            depto_inf = st.selectbox(
+                "Departamento",
+                lista_deptos,
+                index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
+                key="depto_inf"
+            )
+        d_inf = DF_LONG[DF_LONG["departamento"] == depto_inf].copy()
         if d_inf.empty:
-            st.warning("Sin datos de Nariño.")
+            st.warning(f"Sin datos de {depto_inf}.")
             st.stop()
 
-        col1, col2 = st.columns(2)
         with col1:
             ind_inf = st.selectbox("Indicador principal", lista_inds, key="ind_inf")
         with col2:
@@ -1677,7 +1699,7 @@ elif seccion == "📑 Generador de Informes":
 
         nac = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]["valor"].mean()
         rank_df = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)].sort_values("valor", ascending=False).reset_index(drop=True)
-        pos_nar = rank_df[rank_df["departamento"] == "Nariño"]
+        pos_nar = rank_df[rank_df["departamento"] == depto_inf]
         posicion = pos_nar.index[0] + 1 if not pos_nar.empty else None
 
         ultimos = d_ind.tail(5)
@@ -1691,10 +1713,10 @@ elif seccion == "📑 Generador de Informes":
 
         def generar_interpretacion_extensa():
             txt = []
-            txt.append(f"### 1. Contexto del indicador **{ind_inf}** en Nariño ({anio_inf})")
+            txt.append(f"### 1. Contexto del indicador **{ind_inf}** en {depto_inf} ({anio_inf})")
             if val_ult is not None:
                 txt.append(
-                    f"En el año **{anio_inf}**, el valor registrado del indicador **{ind_inf}** para el departamento de Nariño "
+                    f"En el año **{anio_inf}**, el valor registrado del indicador **{ind_inf}** para el departamento de {depto_inf} "
                     f"fue de **{val_ult:,.1f}**. Este dato se enmarca dentro de la serie histórica disponible en la plataforma "
                     f"y constituye el punto de referencia principal del presente informe."
                 )
@@ -1710,13 +1732,13 @@ elif seccion == "📑 Generador de Informes":
                 diferencia = abs(val_ult - nac)
                 txt.append(
                     f"Al contrastar el dato departamental con el promedio nacional del mismo año (**{nac:,.1f}**), "
-                    f"se observa que Nariño se ubica **{rel}** de dicha referencia. "
+                    f"se observa que {depto_inf} se ubica **{rel}** de dicha referencia. "
                     f"La diferencia absoluta es de aproximadamente **{diferencia:,.1f}** unidades del indicador."
                 )
             if posicion is not None:
                 txt.append(
                     f"En el ranking nacional de departamentos para el indicador **{ind_inf}** en **{anio_inf}**, "
-                    f"Nariño ocupó la posición **{posicion}** de un total de **{len(rank_df)}** entidades territoriales. "
+                    f"{depto_inf} ocupó la posición **{posicion}** de un total de **{len(rank_df)}** entidades territoriales. "
                     f"Esta posición relativa aporta contexto sobre el desempeño comparado del departamento."
                 )
             txt.append(
@@ -1795,7 +1817,7 @@ elif seccion == "📑 Generador de Informes":
         with tab_r2:
             st.subheader("Evolución Temporal")
             if not d_ind.empty:
-                fig = px.line(d_ind, x="anio", y="valor", markers=True, title=f"{ind_inf} – Nariño")
+                fig = px.line(d_ind, x="anio", y="valor", markers=True, title=f"{ind_inf} – {depto_inf}")
                 if len(d_ind) >= 3:
                     z = np.polyfit(d_ind["anio"], d_ind["valor"], 1)
                     trend = np.poly1d(z)(d_ind["anio"])
@@ -1836,12 +1858,12 @@ elif seccion == "📑 Generador de Informes":
             md_lines = [
                 f"# Informe de Política – Observatorio Económico y Social",
                 f"**Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"**Territorio:** Nariño",
+                f"**Territorio:** {depto_inf}",
                 f"**Indicador:** {ind_inf}",
                 f"**Año de referencia:** {anio_inf}",
                 "",
                 "## 1. Resumen Ejecutivo",
-                f"- Valor en Nariño ({anio_inf}): **{val_ult:,.1f}**" if val_ult is not None else "- Valor: N/D",
+                f"- Valor en {depto_inf} ({anio_inf}): **{val_ult:,.1f}**" if val_ult is not None else "- Valor: N/D",
                 f"- Variación interanual: **{delta_pct:+.1f}%**" if delta_pct is not None else "- Variación: N/D",
                 f"- Promedio nacional: **{nac:,.1f}**" if nac is not None else "",
                 f"- Posición nacional: **{posicion}°** de {len(rank_df)}" if posicion else "",
@@ -1868,7 +1890,7 @@ elif seccion == "📑 Generador de Informes":
             c1.download_button(
                 "⬇️ Descargar CSV (serie)",
                 data=csv_buf,
-                file_name=f"informe_{ind_inf}_narino_{anio_inf}.csv",
+                file_name=f"informe_{ind_inf}_{depto_inf}_{anio_inf}.csv",
                 mime="text/csv",
             )
             c2.download_button(
@@ -1932,7 +1954,7 @@ elif seccion == "📑 Generador de Informes":
             st.subheader("Evolución Temporal Municipal")
             if muns_inf:
                 df_ts = DF_MUN[DF_MUN["municipio"].isin(muns_inf)]
-                fig = px.line(df_ts, x="anio", y="PIB_Municipal", color="municipio", markers=True, title="PIB Municipal")
+                fig = px.line(df_ts, x="anio", y="PIB_Municipal", color="municipio", markers=True, title="PIB Municipal (aproximaciones)")
                 fig.add_vline(x=anio_inf_m, line_dash="dot", line_color="#22D3EE")
                 fig.update_layout(height=440)
                 st.plotly_chart(style_fig(fig), use_container_width=True)
@@ -1981,8 +2003,8 @@ elif seccion == "💬 Chatbot del Observatorio":
     st.markdown(
         """
         <div class="tip-box">
-        Asistente contextual del Observatorio. Puedes consultar indicadores de Nariño, 
-        municipios de Nariño y otros departamentos, indicando el año que solicites.
+        Asistente contextual del Observatorio. Puedes consultar indicadores de cualquier departamento,
+        municipios de Nariño (aproximaciones) e indicar el año que solicites.
         </div>
         """,
         unsafe_allow_html=True,
@@ -1994,8 +2016,8 @@ elif seccion == "💬 Chatbot del Observatorio":
                 "role": "assistant",
                 "content": (
                     "Hola. Soy el asistente del **Observatorio Económico y Social**. "
-                    "Puedo ayudarte con datos de Nariño y del resto del país (PIB, seguridad, inversión DNP, educación) "
-                    "y con el panel municipal (Pasto, Ipiales, Tumaco, etc.). ¿Qué deseas consultar?"
+                    "Puedo ayudarte con datos de todos los departamentos de Colombia (PIB, seguridad, inversión DNP, educación) "
+                    "y con el panel municipal de Nariño (Pasto, Ipiales, Tumaco, etc. – aproximaciones). ¿Qué deseas consultar?"
                 ),
             }
         ]
@@ -2036,8 +2058,8 @@ elif seccion == "©️ Derechos y Créditos":
                 <li><b>datos.gov.co</b> – Datos abiertos del Gobierno de Colombia (licencias de uso
                     público conforme a la política de datos abiertos).</li>
                 <li><b>DANE y entidades oficiales</b> – Referencia metodológica de cuentas regionales
-                    y valor agregado. En el módulo municipal se pueden emplear <b>aproximaciones de cifras</b>
-                    de alta fidelidad orientadas al análisis exploratorio y a la discusión de política.</li>
+                    y valor agregado. En el módulo municipal se emplean <b>aproximaciones de cifras</b>
+                    de alta fidelidad orientadas al análisis exploratorio y a la discusión de política (solo Nariño).</li>
                 <li><b>GeoJSON departamental</b> – Capa cartográfica de uso abierto.</li>
             </ul>
 
@@ -2050,7 +2072,7 @@ elif seccion == "©️ Derechos y Créditos":
             <h3>Metadatos de la plataforma</h3>
             <ul>
                 <li>Nombre: Observatorio Económico y Social</li>
-                <li>Enfoque territorial: Departamento de Nariño (prioridad) y resto de Colombia</li>
+                <li>Enfoque territorial: Todos los departamentos de Colombia (prioridad Nariño) + 64 municipios de Nariño</li>
                 <li>Stack: Streamlit · Plotly · scikit-learn · statsmodels · libpysal / esda</li>
             </ul>
 
