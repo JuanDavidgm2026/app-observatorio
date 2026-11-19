@@ -1,13 +1,17 @@
 
+# app.py
+# Instalar: pip install streamlit pandas numpy scipy requests plotly statsmodels scikit-learn openpyxl pyarrow ipython beautifulsoup4
+# Ejecutar: streamlit run app.py
+
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import re
 import subprocess
 import sys
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +22,7 @@ import plotly.graph_objects as go
 import requests
 import statsmodels.api as sm
 import streamlit as st
+from scipy import stats
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.inspection import permutation_importance
@@ -27,241 +32,227 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
 from statsmodels.stats.diagnostic import (
-    acorr_breusch_godfrey,
-    acorr_ljungbox,
-    breaks_cusumolsresid,
-    het_breuschpagan,
-    linear_reset,
+    acorr_breusch_godfrey, acorr_ljungbox, breaks_cusumolsresid,
+    het_breuschpagan, linear_reset,
 )
-from statsmodels.stats.outliers_influence import (
-    OLSInfluence,
-    variance_inflation_factor,
-)
+from statsmodels.stats.outliers_influence import OLSInfluence, variance_inflation_factor
 from statsmodels.stats.stattools import jarque_bera
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.stattools import adfuller, kpss
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-
 st.set_page_config(
-    page_title="Observatorio Pasto–Nariño",
+    page_title="Observatorio Pasto · Nariño",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
 st.markdown("""
 <style>
 .stApp {
-    background: linear-gradient(145deg,#0B1220,#111827);
-    color: #E2E8F0;
+    background: linear-gradient(145deg,#0b1220,#111a2e);
+    color: #e2e8f0;
 }
 section[data-testid="stSidebar"] {
-    background: #0F172A;
-    border-right: 1px solid #334155;
+    background: #101b30;
+    border-right: 1px solid #253850;
 }
 h1,h2,h3 {
-    color: #67E8F9 !important;
+    color: #9ce8f1 !important;
+    letter-spacing: -.02em;
 }
 [data-testid="stMetric"] {
-    background: #1E293B;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 12px;
+    background: #1b2a40;
+    border: 1px solid #314760;
+    border-radius: 13px;
+    padding: 14px;
 }
 [data-testid="stDataFrame"] {
-    border: 1px solid #334155;
-    border-radius: 8px;
+    border-radius: 10px;
+    border: 1px solid #314760;
 }
-.stButton > button[kind="primary"] {
-    background: linear-gradient(90deg,#0E7490,#6D28D9);
-    border: none;
+.stButton button[kind="primary"] {
+    background: linear-gradient(95deg,#087e9b,#6953bd);
+    border: 0;
+}
+.hero {
+    padding: 24px;
+    border-radius: 18px;
+    background: linear-gradient(110deg,#143047,#282045);
+    border: 1px solid #334c66;
+    margin-bottom: 20px;
+}
+.hero h2 {
+    margin-top: 0;
+    color: #a8f0f3 !important;
+}
+.hero p {
+    color: #dce9f4;
+    font-size: 1.06rem;
+    line-height: 1.7;
 }
 </style>
 """, unsafe_allow_html=True)
-
-STYLE = dict(
-    template="plotly_dark",
-    paper_bgcolor="#0B1220",
-    plot_bgcolor="#111827",
-)
-
-BASE = Path(__file__).resolve().parent
-RUNTIME = BASE / "runtime"
-
-REPO_RNDC = "JuanDavidgm2026/fletes-precios-inflacion-pasto"
-REPO_SIPSA = "JuanDavidgm2026/SIPSA-PASTO"
-TAG = "sipsa-dane-originales-v1"
 
 Y = "BRECHA_INFLACION_PASTO_COLOMBIA_PP"
 T = "VAR_FLETE_TORNQVIST_PCT"
 P = "PM_ponderado_t"
 I = "ICTC_MENSUAL_PCT"
 
-MES_84 = pd.period_range("2018-01", "2024-12", freq="M")
-MES_59 = pd.period_range("2020-02", "2024-12", freq="M")
-MES_56 = pd.period_range("2020-05", "2024-12", freq="M")
+M84 = pd.period_range("2018-01", "2024-12", freq="M")
+M59 = pd.period_range("2020-02", "2024-12", freq="M")
+M56 = pd.period_range("2020-05", "2024-12", freq="M")
 
-NOMBRES = {
+MAIN = "JuanDavidgm2026/fletes-precios-inflacion-pasto"
+SIPSA = "JuanDavidgm2026/SIPSA-PASTO"
+TAG = "sipsa-dane-originales-v1"
+
+NB_ID = "1Tu3ZzP1L8XlUejqbS_0eXgZ8QszqiMr7"
+NB_SHA = "be21823d6980f6b0f092fd58ff808fa6056c0a550f01606ec9fb1d85276da98f"
+
+CACHE_DIR = Path.cwd() / ".observatorio_cache"
+
+NOM = {
     Y: "Brecha Pasto–Colombia (p. p.)",
-    T: "Fletes RNDC Törnqvist (%)",
-    P: "SIPSA ponderado El Potrerillo (%)",
+    T: "RNDC regional (%)",
+    P: "SIPSA ponderado (%)",
     I: "ICTC nacional (%)",
-    "PM_no_ponderado_t": "SIPSA no ponderado (%)",
-    "PM_ponderado_lagQ_t": "SIPSA pesos rezagados (%)",
-    "PM_100": "SIPSA canasta completa (%)",
-    "PM_95": "SIPSA canasta 95 % (%)",
-    "VAR_FLETE_FISHER_PCT": "Fletes RNDC Fisher (%)",
-    "VAR_FLETE_CRUDO_PCT": "Fletes RNDC sin filtro (%)",
-    "VAR_FLETE_SIN_2000_PCT": "Fletes RNDC sin 2.000 (%)",
     "IPC_MENSUAL_PASTO_PCT": "Inflación mensual Pasto (%)",
-    "IPC_MENSUAL_NACIONAL_PCT": "Inflación mensual nacional (%)",
+    "IPC_MENSUAL_NACIONAL_PCT": "Inflación mensual Colombia (%)",
+    "PM_no_ponderado_t": "SIPSA no ponderado (%)",
+    "PM_ponderado_lagQ_t": "SIPSA con pesos rezagados (%)",
+    "PM_100": "SIPSA canasta PM_100 (%)",
+    "PM_95": "SIPSA canasta PM_95 (%)",
+    "VAR_FLETE_FISHER_PCT": "RNDC Fisher (%)",
+    "VAR_FLETE_CRUDO_PCT": "RNDC sin filtro (%)",
+    "VAR_FLETE_SIN_2000_PCT": "RNDC sin valores de 2.000 (%)",
     "cobertura_indice_pct": "Cobertura SIPSA (%)",
-    "n_productos_indice": "Productos SIPSA emparejados",
-}
-
-HASHES = {
-    "RNDC": (
-        "aaec180a88d32bbccbfb13b94be4784c9e9b4c6f23d9a93b7475b1acd1bd3891"
-    ),
-    "IPC": (
-        "3e584414f3f89c78f99ce92576a0715d3d51fac5d6dcd75addf84065e4cd4076"
-    ),
-    "ICTC": (
-        "6fe232548e47dbf9801b75c620209f579ebd0faa2a46fc30a9a305453878205a"
-    ),
+    "n_productos_indice": "Productos SIPSA",
+    "COB_VALOR_T_PCT": "Cobertura RNDC por valor (%)",
+    "COB_VIAJES_T_PCT": "Cobertura RNDC por viajes (%)",
+    "CELDAS_COMPARABLES": "Celdas RNDC comparables",
 }
 
 URLS = {
     "RNDC": [
-        f"https://raw.githubusercontent.com/{REPO_RNDC}/main/data/"
+        f"https://raw.githubusercontent.com/{MAIN}/main/data/"
         "variable2_flete_regional_modelo_2020_2024.csv"
     ],
     "IPC": [
-        "https://www.dane.gov.co/files/operaciones/IPC/"
-        "dic2024/anex-IPC-CiudadesMensuales-dic2024.xlsx",
-        f"https://github.com/{REPO_SIPSA}/releases/download/"
-        f"{TAG}/anex-IPC-CiudadesMensuales-dic2024.xlsx",
+        "https://www.dane.gov.co/files/operaciones/IPC/dic2024/"
+        "anex-IPC-CiudadesMensuales-dic2024.xlsx",
+        f"https://github.com/{SIPSA}/releases/download/{TAG}/"
+        "anex-IPC-CiudadesMensuales-dic2024.xlsx",
     ],
     "ICTC": [
         "https://www.dane.gov.co/files/operaciones/ICTC/"
         "anex-ICTC-HistVariaContrib-dic2024.xlsx",
-        f"https://github.com/{REPO_SIPSA}/releases/download/"
-        f"{TAG}/anex-ICTC-HistVariaContrib-dic2024.xlsx",
+        f"https://github.com/{SIPSA}/releases/download/{TAG}/"
+        "anex-ICTC-HistVariaContrib-dic2024.xlsx",
     ],
 }
 
-NOTEBOOK_ID = "1Tu3ZzP1L8XlUejqbS_0eXgZ8QszqiMr7"
+HASH = {
+    "RNDC": "aaec180a88d32bbccbfb13b94be4784c9e9b4c6f23d9a93b7475b1acd1bd3891",
+    "IPC": "3e584414f3f89c78f99ce92576a0715d3d51fac5d6dcd75addf84065e4cd4076",
+    "ICTC": "6fe232548e47dbf9801b75c620209f579ebd0faa2a46fc30a9a305453878205a",
+}
 
-SIPSA_CELDA_SHA = (
-    "be21823d6980f6b0f092fd58ff808fa6056c0a550f01606ec9fb1d85276da98f"
-)
+ART = {
+    "N": 56,
+    "RNDC0": 0.00913,
+    "p_RNDC0": 0.03750,
+    "p_RNDC_bloque": 0.14273,
+    "p_SIPSA_bloque": 0.23749,
+    "R2aj": 0.1033,
+}
 
 
-def sha(raw):
+def etiqueta(x):
+    return NOM.get(x, x)
+
+
+def huella(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def descargar(url, timeout=75):
-    respuesta = requests.get(
-        url,
-        timeout=timeout,
-        headers={"User-Agent": "Observatorio-Pasto/2.1"},
-    )
-    respuesta.raise_for_status()
-    return respuesta.content
-
-
-def verificar_descarga(nombre):
-    errores = []
-
-    for url in URLS[nombre]:
-        try:
-            raw = descargar(url)
-
-            if sha(raw) != HASHES[nombre]:
-                raise ValueError(
-                    "SHA-256 distinto del registrado en el Colab"
-                )
-
-            return raw, url
-
-        except Exception as exc:
-            errores.append(f"{url}: {str(exc)[:100]}")
-
-    raise RuntimeError(" | ".join(errores))
-
-
-def normalizar(valor):
-    if pd.isna(valor):
+def normal(v):
+    if pd.isna(v):
         return ""
 
-    texto = unicodedata.normalize(
-        "NFKD",
-        str(valor).strip().lower(),
+    s = unicodedata.normalize("NFKD", str(v).strip().lower())
+
+    return " ".join(
+        "".join(
+            c for c in s
+            if not unicodedata.combining(c)
+        ).split()
     )
 
-    texto = "".join(
-        c for c in texto
-        if not unicodedata.combining(c)
-    )
 
-    return " ".join(texto.split())
-
-
-def numero(v):
+def num(v):
     if pd.isna(v):
         return np.nan
 
-    if isinstance(v, (float, int, np.number)):
+    if isinstance(v, (int, float, np.number)):
         return float(v)
 
-    valor = str(v).strip().replace("%", "").replace(",", ".")
-
     return float(
-        pd.to_numeric(valor, errors="coerce")
+        pd.to_numeric(
+            str(v).strip().replace("%", "").replace(",", "."),
+            errors="coerce",
+        )
     )
 
 
-def fechas_mensuales(serie):
-    if isinstance(serie.dtype, pd.PeriodDtype):
-        return serie.dt.asfreq("M")
+def get(url, timeout=75):
+    r = requests.get(
+        url,
+        timeout=timeout,
+        headers={"User-Agent": "ObservatorioPasto/3.0"},
+    )
+    r.raise_for_status()
+    return r.content
 
-    texto = serie.astype("string").str.strip()
 
-    if texto.dropna().str.fullmatch(r"\d{6}").all():
+def fecha_mensual(s):
+    if isinstance(s.dtype, pd.PeriodDtype):
+        return s.dt.asfreq("M")
+
+    v = s.astype("string").str.strip()
+
+    if v.dropna().str.fullmatch(r"\d{6}").all():
         return pd.to_datetime(
-            texto,
-            format="%Y%m",
-            errors="coerce",
+            v, format="%Y%m", errors="coerce"
+        ).dt.to_period("M")
+
+    if v.dropna().str.fullmatch(r"\d{4}-\d{2}").all():
+        return pd.to_datetime(
+            v + "-01", errors="coerce"
         ).dt.to_period("M")
 
     return pd.to_datetime(
-        serie,
-        errors="coerce",
+        s, errors="coerce"
     ).dt.to_period("M")
 
 
-def auditar_meses(df, meses, columnas):
-    if df["mes"].tolist() != list(meses):
+def exigir_meses(d, periodos, variables):
+    if d["mes"].tolist() != list(periodos):
         raise ValueError(
-            f"Calendario incompleto o duplicado: "
-            f"{meses[0]} a {meses[-1]}"
+            f"Cobertura distinta de {periodos[0]}–{periodos[-1]}"
         )
 
-    valores = df[columnas].to_numpy(float)
-
-    if not np.isfinite(valores).all():
-        raise ValueError(
-            "Valores no observados o no finitos. No se imputan."
-        )
+    if not np.isfinite(
+        d[variables].to_numpy(dtype=float)
+    ).all():
+        raise ValueError("Serie incompleta o no finita")
 
 
-def normalizar_base(df, nombre):
-    d = df.copy()
+def estandarizar(d, nombre):
+    d = d.copy()
 
     d.columns = [
-        str(c).replace("\ufeff", "").strip()
+        str(c).lstrip("\ufeff").strip()
         for c in d.columns
     ]
 
@@ -269,7 +260,7 @@ def normalizar_base(df, nombre):
         (
             c for c in [
                 "mes", "FECHA", "fecha",
-                "PERIODO", "periodo"
+                "PERIODO", "periodo", "MES"
             ]
             if c in d
         ),
@@ -278,42 +269,37 @@ def normalizar_base(df, nombre):
 
     if fecha is None:
         raise ValueError(
-            f"{nombre}: falta columna temporal reconocible"
+            f"{nombre}: sin fecha reconocible"
         )
 
-    d["mes"] = fechas_mensuales(d[fecha])
+    d["mes"] = fecha_mensual(d[fecha])
 
     d = d[
-        d["mes"].isin(MES_84)
+        d["mes"].isin(M84)
     ].sort_values("mes")
 
     if d["mes"].duplicated().any():
         raise ValueError(
-            f"{nombre}: hay meses duplicados"
+            f"{nombre}: meses duplicados"
         )
 
-    columnas = [
-        c for c in NOMBRES
+    cols = [
+        c for c in NOM
         if c in d
     ]
 
-    if not columnas:
+    if not cols:
         raise ValueError(
-            f"{nombre}: ninguna columna del estudio identificada"
+            f"{nombre}: sin variables del estudio"
         )
 
-    for c in columnas:
+    for c in cols:
         d[c] = pd.to_numeric(
-            d[c],
-            errors="coerce",
+            d[c], errors="coerce"
         )
-
-        d.loc[
-            ~np.isfinite(d[c]), c
-        ] = np.nan
 
     return d[
-        ["mes"] + columnas
+        ["mes"] + cols
     ].reset_index(drop=True)
 
 
@@ -321,28 +307,26 @@ def leer_tabla(raw, nombre):
     if nombre.lower().endswith(".parquet"):
         return pd.read_parquet(io.BytesIO(raw))
 
-    for codificacion in ("utf-8-sig", "latin-1"):
-        for separador in (",", ";"):
+    for cod in ["utf-8-sig", "latin-1"]:
+        for sep in [",", ";"]:
             try:
                 d = pd.read_csv(
                     io.BytesIO(raw),
-                    encoding=codificacion,
-                    sep=separador,
+                    encoding=cod,
+                    sep=sep,
                 )
 
-                if d.shape[1] >= 2:
+                if d.shape[1] > 1:
                     return d
 
-            except Exception:
+            except (UnicodeError, pd.errors.ParserError):
                 pass
 
-    raise ValueError(
-        f"Formato no reconocido: {nombre}"
-    )
+    raise ValueError("CSV/Parquet ilegible")
 
 
-def calcular_ipc(raw):
-    hoja = pd.read_excel(
+def ipc_dane(raw):
+    a = pd.read_excel(
         io.BytesIO(raw),
         sheet_name="VarCiudades",
         header=None,
@@ -350,22 +334,20 @@ def calcular_ipc(raw):
 
     bloques = []
 
-    for fila, valor in enumerate(hoja.iloc[:, 0]):
-        m = re.search(
+    for i, x in enumerate(a.iloc[:, 0]):
+        match = re.search(
             r"variaciones mensuales\s+(20\d{2})",
-            normalizar(valor),
+            normal(x),
         )
 
-        if m:
+        if match:
             bloques.append(
-                (int(m.group(1)), fila)
+                (int(match.group(1)), i)
             )
 
-    if [
-        x[0] for x in bloques
-    ] != list(range(2017, 2025)):
+    if [x[0] for x in bloques] != list(range(2017, 2025)):
         raise ValueError(
-            "IPC: bloques anuales diferentes del Colab"
+            "Hoja IPC distinta del anexo auditado"
         )
 
     meses = (
@@ -375,61 +357,57 @@ def calcular_ipc(raw):
 
     filas = []
 
-    for k, (anio, inicio) in enumerate(bloques):
+    for k, (anio, ini) in enumerate(bloques):
         encabezados = [
-            normalizar(hoja.iat[inicio + 1, c])
+            normal(a.iat[ini + 1, c])
             for c in range(1, 13)
         ]
 
         if encabezados != meses:
             raise ValueError(
-                f"IPC: encabezados incorrectos en {anio}"
+                f"Encabezados IPC no reconocidos: {anio}"
             )
 
         fin = (
             bloques[k + 1][1]
             if k + 1 < len(bloques)
-            else len(hoja)
+            else len(a)
         )
 
         pasto = [
-            j for j in range(inicio + 2, fin)
-            if normalizar(hoja.iat[j, 0]) == "pasto"
+            i for i in range(ini + 2, fin)
+            if normal(a.iat[i, 0]) == "pasto"
         ]
 
         nacional = [
-            j for j in range(inicio + 2, fin)
-            if normalizar(hoja.iat[j, 0]) == "total ipc"
+            i for i in range(ini + 2, fin)
+            if normal(a.iat[i, 0]) == "total ipc"
         ]
 
         if len(pasto) != 1 or len(nacional) != 1:
             raise ValueError(
-                f"IPC: filas Pasto/Nacional ambiguas en {anio}"
+                f"Pasto/Total IPC ambiguos: {anio}"
             )
 
         for mes in range(1, 13):
-            if anio >= 2018:
-                p = numero(
-                    hoja.iat[pasto[0], mes]
-                )
-                n = numero(
-                    hoja.iat[nacional[0], mes]
-                )
+            if anio < 2018:
+                continue
 
-                filas.append({
-                    "mes": pd.Period(
-                        f"{anio}-{mes:02d}"
-                    ),
-                    "IPC_MENSUAL_PASTO_PCT": p,
-                    "IPC_MENSUAL_NACIONAL_PCT": n,
-                    Y: p - n,
-                })
+            p = num(a.iat[pasto[0], mes])
+            n = num(a.iat[nacional[0], mes])
 
-    resultado = pd.DataFrame(filas)
+            filas.append({
+                "mes": pd.Period(f"{anio}-{mes:02d}"),
+                "IPC_MENSUAL_PASTO_PCT": p,
+                "IPC_MENSUAL_NACIONAL_PCT": n,
+                Y: p - n,
+            })
 
-    auditar_meses(
-        resultado,
-        MES_84,
+    d = pd.DataFrame(filas)
+
+    exigir_meses(
+        d,
+        M84,
         [
             Y,
             "IPC_MENSUAL_PASTO_PCT",
@@ -437,50 +415,42 @@ def calcular_ipc(raw):
         ],
     )
 
-    ultimo = resultado.iloc[-1]
-
     if not (
         np.isclose(
-            ultimo["IPC_MENSUAL_PASTO_PCT"], 0.47
+            d.iloc[-1]["IPC_MENSUAL_PASTO_PCT"], 0.47
         )
         and np.isclose(
-            ultimo["IPC_MENSUAL_NACIONAL_PCT"], 0.46
+            d.iloc[-1]["IPC_MENSUAL_NACIONAL_PCT"], 0.46
         )
     ):
         raise ValueError(
-            "IPC: control diciembre 2024 no coincide"
+            "IPC: diciembre 2024 no coincide con el control del Colab"
         )
 
-    return resultado
+    return d
 
 
-def calcular_ictc(raw):
-    hoja = pd.read_excel(
+def ictc_dane(raw):
+    a = pd.read_excel(
         io.BytesIO(raw),
         sheet_name="Anexo1",
         header=None,
     ).iloc[:, :3].copy()
 
-    hoja.columns = [
-        "anio_raw",
-        "mes_raw",
-        "valor_raw",
+    a.columns = [
+        "anio_bruto",
+        "mes_bruto",
+        "valor_bruto",
     ]
 
-    def anio(v):
+    def anio(x):
         try:
-            valor = int(float(v))
-
-            return (
-                float(valor)
-                if 2000 <= valor <= 2100
-                else np.nan
-            )
-
+            v = int(float(x))
+            return float(v) if 2000 <= v <= 2100 else np.nan
         except (ValueError, TypeError):
             return np.nan
 
-    hoja["anio"] = hoja["anio_raw"].map(anio).ffill()
+    a["anio"] = a["anio_bruto"].map(anio).ffill()
 
     mapa = {
         m: i + 1
@@ -490,50 +460,77 @@ def calcular_ictc(raw):
         )
     }
 
-    hoja["n_mes"] = hoja["mes_raw"].map(
-        normalizar
-    ).map(mapa)
+    a["nmes"] = a["mes_bruto"].map(normal).map(mapa)
+    a[I] = a["valor_bruto"].map(num)
 
-    hoja[I] = hoja["valor_raw"].map(numero)
-
-    hoja = hoja[
-        hoja["anio"].between(2018, 2024)
-        & hoja["n_mes"].notna()
-        & hoja[I].notna()
+    a = a[
+        a["anio"].between(2018, 2024)
+        & a["nmes"].notna()
+        & a[I].notna()
     ].copy()
 
-    hoja["mes"] = pd.PeriodIndex(
-        year=hoja["anio"].astype(int),
-        month=hoja["n_mes"].astype(int),
+    a["mes"] = pd.PeriodIndex(
+        year=a["anio"].astype(int),
+        month=a["nmes"].astype(int),
         freq="M",
     )
 
-    resultado = hoja[
+    d = a[
         ["mes", I]
     ].sort_values("mes").reset_index(drop=True)
 
-    auditar_meses(
-        resultado,
-        MES_84,
-        [I],
-    )
+    exigir_meses(d, M84, [I])
 
     if not (
-        np.isclose(resultado.iloc[0][I], 0.70)
-        and np.isclose(resultado.iloc[1][I], 0.83)
+        np.isclose(d.iloc[0][I], 0.70)
+        and np.isclose(d.iloc[1][I], 0.83)
     ):
         raise ValueError(
-            "ICTC: controles históricos no coinciden"
+            "ICTC: controles de enero/febrero de 2018 no coinciden"
         )
 
-    return resultado
+    return d
 
 
-def descubrir_csv_publicos():
-    archivos = []
+def fuente_oficial(nombre):
     errores = []
-    vistos = set()
 
+    for url in URLS[nombre]:
+        try:
+            raw = get(url)
+
+            if huella(raw) != HASH[nombre]:
+                raise ValueError("SHA-256 diferente")
+
+            parsers = {
+                "IPC": ipc_dane,
+                "ICTC": ictc_dane,
+                "RNDC": lambda x: estandarizar(
+                    leer_tabla(x, "rndc.csv"), "RNDC"
+                ),
+            }
+
+            d = parsers[nombre](raw)
+
+            if nombre == "RNDC":
+                exigir_meses(d, M59, [T])
+
+            registro = {
+                "archivo": nombre,
+                "fuente": url,
+                "sha256": huella(raw),
+                "control": "SHA verificado",
+            }
+
+            return d, registro
+
+        except Exception as e:
+            errores.append(f"{url}: {e}")
+
+    raise RuntimeError(" | ".join(errores))
+
+
+def descubrir_procesados():
     claves = (
         "sipsa_indicadores",
         "indicadores_mensuales",
@@ -541,343 +538,284 @@ def descubrir_csv_publicos():
         "base_econometrica",
         "base_estimacion",
         "pm_ponderado",
-        "variable3_brecha",
-        "ictc_mensual",
+        "cobertura_alternativas",
     )
 
-    for repo in (REPO_SIPSA, REPO_RNDC):
+    salidas = []
+    errores = []
+    vistos = set()
+
+    for repo in [SIPSA, MAIN]:
         try:
-            metadata = requests.get(
+            r = requests.get(
                 f"https://api.github.com/repos/{repo}",
                 timeout=20,
             )
-            metadata.raise_for_status()
+            r.raise_for_status()
 
-            rama = metadata.json().get(
-                "default_branch",
-                "main",
+            rama = r.json().get(
+                "default_branch", "main"
             )
 
-            ruta = (
+            r = requests.get(
                 f"https://api.github.com/repos/{repo}/"
-                f"git/trees/{rama}?recursive=1"
+                f"git/trees/{rama}?recursive=1",
+                timeout=30,
             )
+            r.raise_for_status()
 
-            respuesta = requests.get(
-                ruta,
-                timeout=25,
-            )
-            respuesta.raise_for_status()
+            for obj in r.json().get("tree", []):
+                ruta = obj.get("path", "")
+                archivo = Path(ruta).name.lower()
 
-            for item in respuesta.json().get("tree", []):
-                nombre = item.get("path", "")
-
-                if item.get("type") != "blob":
+                if obj.get("type") != "blob":
                     continue
 
-                if not nombre.lower().endswith(
-                    (".csv", ".parquet")
-                ):
+                if not archivo.endswith((".csv", ".parquet")):
                     continue
 
-                if not any(
-                    clave in nombre.lower()
-                    for clave in claves
-                ):
+                if not any(k in archivo for k in claves):
                     continue
 
                 url = (
                     f"https://raw.githubusercontent.com/"
-                    f"{repo}/{rama}/{nombre}"
+                    f"{repo}/{rama}/{ruta}"
                 )
 
                 if url not in vistos:
-                    archivos.append((nombre, url))
+                    salidas.append((ruta, url))
                     vistos.add(url)
 
-        except Exception as exc:
+        except Exception as e:
             errores.append(
-                f"Inventario {repo}: {exc}"
+                f"GitHub {repo}: {e}"
             )
 
         try:
-            releases = requests.get(
+            r = requests.get(
                 f"https://api.github.com/repos/{repo}/releases",
-                timeout=20,
+                timeout=25,
             )
-            releases.raise_for_status()
+            r.raise_for_status()
 
-            for release in releases.json()[:10]:
-                for asset in release.get("assets", []):
-                    nombre = asset["name"]
+            for rel in r.json()[:10]:
+                for asset in rel.get("assets", []):
+                    archivo = asset["name"].lower()
 
-                    if not nombre.lower().endswith(
-                        (".csv", ".parquet")
+                    if (
+                        archivo.endswith((".csv", ".parquet"))
+                        and any(k in archivo for k in claves)
                     ):
-                        continue
+                        url = asset["browser_download_url"]
 
-                    if not any(
-                        clave in nombre.lower()
-                        for clave in claves
-                    ):
-                        continue
+                        if url not in vistos:
+                            salidas.append(
+                                (asset["name"], url)
+                            )
+                            vistos.add(url)
 
-                    url = asset["browser_download_url"]
-
-                    if url not in vistos:
-                        archivos.append((nombre, url))
-                        vistos.add(url)
-
-        except Exception as exc:
+        except Exception as e:
             errores.append(
-                f"Releases {repo}: {exc}"
+                f"Releases {repo}: {e}"
             )
 
-    return archivos, errores
+    return salidas, errores
 
 
 @st.cache_data(
     ttl=3600,
-    show_spinner="Verificando y recuperando datos oficiales...",
+    show_spinner="Conectando con DANE y respaldos verificados de GitHub…",
 )
-def cargar_datos():
+def cargar_base():
     base = pd.DataFrame({
-        "mes": MES_84
+        "mes": M84
     })
 
-    partes = []
     bitacora = []
-    errores = []
+    incidencias = []
+    series = []
 
-    def trabajo(nombre):
-        raw, url = verificar_descarga(nombre)
+    for nombre in ["RNDC", "IPC", "ICTC"]:
+        try:
+            d, registro = fuente_oficial(nombre)
 
-        parsers = {
-            "IPC": calcular_ipc,
-            "ICTC": calcular_ictc,
-            "RNDC": lambda v: normalizar_base(
-                leer_tabla(v, "rndc.csv"),
-                "RNDC",
-            ),
-        }
+            series.append((nombre, d))
+            bitacora.append(registro)
 
-        tabla = parsers[nombre](raw)
-
-        if nombre == "RNDC":
-            auditar_meses(
-                tabla,
-                MES_59,
-                [T],
+        except Exception as e:
+            incidencias.append(
+                f"{nombre}: {str(e)[:380]}"
             )
 
-        return (
-            nombre,
-            tabla,
-            url,
-            sha(raw),
-            len(raw),
-            "SHA-256 verificado",
-        )
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        procesos = {
-            nombre: executor.submit(trabajo, nombre)
-            for nombre in ("IPC", "ICTC", "RNDC")
-        }
-
-        for nombre, futuro in procesos.items():
-            try:
-                partes.append(futuro.result())
-
-            except Exception as exc:
-                errores.append(
-                    f"{nombre}: {exc}"
-                )
-
-    candidatos, incidencias = descubrir_csv_publicos()
-    errores.extend(incidencias)
+    candidatos, problemas = descubrir_procesados()
+    incidencias.extend(problemas)
 
     for nombre, url in candidatos:
         try:
-            raw = descargar(url)
+            raw = get(url)
 
-            tabla = normalizar_base(
+            d = estandarizar(
                 leer_tabla(raw, nombre),
                 nombre,
             )
 
-            partes.append((
-                nombre,
-                tabla,
-                url,
-                sha(raw),
-                len(raw),
-                "SHA calculado, sin referencia histórica",
-            ))
+            series.append((nombre, d))
 
-        except Exception as exc:
-            errores.append(
-                f"{nombre}: {exc}"
+            bitacora.append({
+                "archivo": nombre,
+                "fuente": url,
+                "sha256": huella(raw),
+                "control": "SHA calculado; sin hash de referencia",
+            })
+
+        except Exception as e:
+            incidencias.append(
+                f"{nombre}: {str(e)[:220]}"
             )
 
-    archivo = (
-        RUNTIME
+    local = (
+        CACHE_DIR
         / "SIPSA_AUDITORIA_RESULTADOS"
         / "SIPSA_INDICADORES_MENSUALES_2018_2024_CORREGIDO.csv"
     )
 
-    if archivo.is_file():
+    if local.exists():
         try:
-            raw = archivo.read_bytes()
+            raw = local.read_bytes()
 
-            tabla = normalizar_base(
-                leer_tabla(raw, archivo.name),
-                archivo.name,
+            d = estandarizar(
+                leer_tabla(raw, local.name),
+                local.name,
             )
 
-            partes.append((
-                "SIPSA reconstruido",
-                tabla,
-                str(archivo),
-                sha(raw),
-                len(raw),
-                "Reconstrucción auditada; SHA calculado",
-            ))
+            exigir_meses(d, M84, [P])
 
-        except Exception as exc:
-            errores.append(
-                f"Reconstrucción SIPSA: {exc}"
+            series.append(
+                ("SIPSA reconstruido", d)
+            )
+
+            bitacora.append({
+                "archivo": local.name,
+                "fuente": "Fase SIPSA verificada del Colab",
+                "sha256": huella(raw),
+                "control": "Salida local verificada por calendario",
+            })
+
+        except Exception as e:
+            incidencias.append(
+                f"SIPSA reconstruido: {e}"
             )
 
     bloqueadas = set()
     procedencia = {}
 
-    for nombre, tabla, url, huella, tam, control in partes:
-        bitacora.append({
-            "Archivo": nombre,
-            "Procedencia": url,
-            "SHA256": huella,
-            "Tamaño_bytes": tam,
-            "Estado": control,
-        })
+    for nombre, d in series:
+        d = d.set_index("mes").reindex(M84)
 
-        indice = tabla.set_index("mes")
-
-        for variable in tabla.columns:
-            if variable == "mes" or variable in bloqueadas:
+        for c in d.columns:
+            if c in bloqueadas:
                 continue
 
-            nuevo = indice[variable].reindex(
-                base["mes"]
-            ).to_numpy()
+            nuevo = pd.to_numeric(
+                d[c],
+                errors="coerce",
+            ).reset_index(drop=True)
 
-            if variable not in base:
-                base[variable] = nuevo
-                procedencia[variable] = nombre
+            if c not in base:
+                base[c] = nuevo.to_numpy()
+                procedencia[c] = nombre
+                continue
+
+            anterior = pd.to_numeric(
+                base[c], errors="coerce"
+            )
+
+            comunes = anterior.notna() & nuevo.notna()
+
+            if comunes.any() and not np.allclose(
+                anterior[comunes],
+                nuevo[comunes],
+                rtol=1e-7,
+                atol=1e-8,
+            ):
+                incidencias.append(
+                    f"Incompatibilidad en {c}: "
+                    f"{procedencia[c]} y {nombre}"
+                )
+
+                base[c] = np.nan
+                bloqueadas.add(c)
 
             else:
-                viejo = pd.to_numeric(
-                    base[variable],
-                    errors="coerce",
-                )
+                base[c] = anterior.combine_first(nuevo)
 
-                nuevo = pd.Series(
-                    nuevo,
-                    dtype=float,
-                )
-
-                ambos = viejo.notna() & nuevo.notna()
-
-                if ambos.any() and not np.allclose(
-                    viejo[ambos],
-                    nuevo[ambos],
-                    rtol=1e-7,
-                    atol=1e-9,
-                ):
-                    base[variable] = np.nan
-                    bloqueadas.add(variable)
-
-                    errores.append(
-                        f"Conflicto de datos {variable}: "
-                        f"{procedencia[variable]} y {nombre}"
-                    )
-
-                else:
-                    base[variable] = viejo.combine_first(nuevo)
-
-    return base, pd.DataFrame(bitacora), errores
+    return base, pd.DataFrame(bitacora), incidencias
 
 
 def reconstruir_sipsa():
+    # Ejecuta únicamente la fase cuyo SHA coincide con el Colab auditado.
     endpoints = [
-        (
-            "https://drive.google.com/uc?"
-            f"export=download&id={NOTEBOOK_ID}"
-        ),
+        f"https://drive.google.com/uc?export=download&id={NB_ID}",
         (
             "https://drive.usercontent.google.com/download?"
-            f"id={NOTEBOOK_ID}&export=download&confirm=t"
+            f"id={NB_ID}&export=download&confirm=t"
         ),
     ]
 
-    problemas = []
+    errores = []
 
     for url in endpoints:
         try:
-            notebook = requests.get(
-                url,
-                timeout=90,
-                headers={"User-Agent": "Mozilla/5.0"},
+            nb = json.loads(
+                get(url, timeout=90).decode("utf-8-sig")
             )
 
-            notebook.raise_for_status()
-            contenido = notebook.json()
-
-            fuente = "".join(
-                contenido["cells"][2]["source"]
-            )
-
-            if sha(fuente.encode("utf-8")) != SIPSA_CELDA_SHA:
+            if (
+                not isinstance(nb.get("cells"), list)
+                or len(nb["cells"]) < 3
+            ):
                 raise ValueError(
-                    "La fase SIPSA pública cambió respecto "
-                    "al Colab auditado"
+                    "Notebook público no disponible"
                 )
 
-            RUNTIME.mkdir(
-                parents=True,
-                exist_ok=True,
+            script = "".join(
+                nb["cells"][2]["source"]
             )
+
+            if huella(script.encode()) != NB_SHA:
+                raise ValueError(
+                    "La versión del notebook cambió; ejecución bloqueada"
+                )
+
+            CACHE_DIR.mkdir(exist_ok=True)
 
             rutas = {
                 "/content/SIPSA_DANE": str(
-                    RUNTIME / "SIPSA_DANE"
+                    CACHE_DIR / "SIPSA_DANE"
                 ),
                 "/content/SIPSA_GITHUB_CACHE": str(
-                    RUNTIME / "SIPSA_GITHUB_CACHE"
+                    CACHE_DIR / "SIPSA_GITHUB_CACHE"
                 ),
                 "/content/SIPSA_AUDITORIA_RESULTADOS": str(
-                    RUNTIME / "SIPSA_AUDITORIA_RESULTADOS"
+                    CACHE_DIR / "SIPSA_AUDITORIA_RESULTADOS"
                 ),
             }
 
-            for actual, destino in rutas.items():
-                fuente = fuente.replace(
-                    actual,
-                    destino,
+            for original, nuevo in rutas.items():
+                script = script.replace(
+                    original, nuevo
                 )
 
-            script = (
-                RUNTIME / "sipsa_fases_1_7_verificadas.py"
-            )
+            ruta = CACHE_DIR / "fase_sipsa_auditada.py"
 
-            script.write_text(
-                fuente,
+            ruta.write_text(
+                script,
                 encoding="utf-8",
             )
 
             resultado = subprocess.run(
-                [sys.executable, str(script)],
-                cwd=BASE,
+                [sys.executable, str(ruta)],
+                cwd=Path.cwd(),
                 capture_output=True,
                 text=True,
                 timeout=3600,
@@ -885,455 +823,415 @@ def reconstruir_sipsa():
 
             if resultado.returncode:
                 raise RuntimeError(
-                    (resultado.stderr or resultado.stdout)[-1800:]
+                    (resultado.stderr or resultado.stdout)[-1500:]
                 )
 
-            archivo = (
-                RUNTIME
+            final = (
+                CACHE_DIR
                 / "SIPSA_AUDITORIA_RESULTADOS"
                 / "SIPSA_INDICADORES_MENSUALES_2018_2024_CORREGIDO.csv"
             )
 
-            if not archivo.is_file():
+            if not final.exists():
                 raise ValueError(
-                    "La fase auditada no generó el indicador mensual"
+                    "La fase no generó el indicador mensual"
                 )
 
-            tabla = normalizar_base(
-                pd.read_csv(archivo),
-                archivo.name,
-            )
-
-            auditar_meses(
-                tabla,
-                MES_84,
+            exigir_meses(
+                estandarizar(
+                    pd.read_csv(final),
+                    final.name,
+                ),
+                M84,
                 [P],
             )
 
-            return (
-                f"Reconstrucción satisfactoria: 84 meses. "
-                f"SHA-256: {sha(archivo.read_bytes())}"
-            )
+            return final
 
-        except Exception as exc:
-            problemas.append(str(exc)[:350])
+        except Exception as e:
+            errores.append(str(e)[:300])
 
-    raise RuntimeError(
-        " | ".join(problemas)
-    )
+    raise RuntimeError(" | ".join(errores))
 
 
-def muestra_comun(base, variables, minimo=1):
+def muestra(d, variables, periodos=M59):
     faltantes = [
-        v for v in variables
-        if v not in base
+        c for c in variables
+        if c not in d
     ]
 
     if faltantes:
         raise ValueError(
-            "Faltan variables: " + ", ".join(faltantes)
+            "Variables no descargadas: " + ", ".join(faltantes)
         )
 
-    d = base.loc[
-        base["mes"].isin(MES_59),
-        ["mes"] + variables,
-    ].copy()
+    z = d[
+        d["mes"].isin(periodos)
+    ][["mes"] + variables].copy().reset_index(drop=True)
 
-    if (
-        len(d) != 59
-        or d[variables].isna().any().any()
-    ):
-        raise ValueError(
-            "No están completos los 59 meses comunes. "
-            "No se realizan imputaciones."
-        )
-
-    auditar_meses(
-        d,
-        MES_59,
-        variables,
+    exigir_meses(
+        z, periodos, variables
     )
 
-    if len(d) < minimo:
-        raise ValueError(
-            "Muestra insuficiente"
-        )
-
-    return d.reset_index(drop=True)
+    return z
 
 
-def construir_modelo(
-    base,
+def matriz_ardl(
+    d,
     L=2,
     ar=True,
     transporte=T,
-    precios=P,
+    precio=P,
 ):
-    d = muestra_comun(
-        base,
-        [Y, transporte, precios],
-        59,
+    z = muestra(
+        d,
+        [Y, transporte, precio],
     )
 
-    z = d[["mes", Y]].copy()
+    x = z[["mes", Y]].copy()
     columnas = []
 
     if ar:
-        z["B_L1"] = d[Y].shift(1)
+        x["B_L1"] = z[Y].shift(1)
         columnas.append("B_L1")
 
-    for variable, prefijo in [
+    for columna, prefijo in [
         (transporte, "T"),
-        (precios, "P"),
+        (precio, "P"),
     ]:
         for lag in range(L + 1):
             nombre = f"{prefijo}_L{lag}"
 
-            z[nombre] = d[variable].shift(lag)
+            x[nombre] = z[columna].shift(lag)
             columnas.append(nombre)
 
-    z = z[
-        z["mes"].isin(MES_56)
+    x = x[
+        x["mes"].isin(M56)
     ].dropna().reset_index(drop=True)
 
-    auditar_meses(
-        z,
-        MES_56,
+    exigir_meses(
+        x,
+        M56,
         [Y] + columnas,
     )
 
-    return z, columnas
+    return x, columnas
 
 
-def ajustar(
-    base,
+def ardl(
+    d,
     L=2,
     ar=True,
     hac=3,
     transporte=T,
-    precios=P,
+    precio=P,
     excluir=None,
-    estacionalidad=False,
+    trimestres=False,
 ):
-    z, columnas = construir_modelo(
-        base,
-        L,
-        ar,
-        transporte,
-        precios,
+    z, columnas = matriz_ardl(
+        d, L, ar, transporte, precio
     )
 
-    if excluir is not None:
+    if excluir:
         z = z[
             z["mes"] != pd.Period(excluir)
         ].copy()
 
-    if estacionalidad:
-        trimestre = (
-            ((z["mes"].dt.month - 1) // 3) + 1
-        )
+    if trimestres:
+        q = (
+            z["mes"].dt.month.sub(1) // 3
+        ).add(1)
 
-        for q in (2, 3, 4):
-            nombre = f"Q{q}"
+        for j in (2, 3, 4):
+            name = f"Q{j}"
 
-            z[nombre] = (
-                trimestre == q
-            ).astype(int)
-
-            columnas.append(nombre)
+            z[name] = (q == j).astype(int)
+            columnas.append(name)
 
     X = sm.add_constant(
         z[columnas].astype(float),
         has_constant="add",
     )
 
-    if len(z) <= X.shape[1] + 8:
+    if len(z) < X.shape[1] + 10:
         raise ValueError(
             "Grados de libertad insuficientes"
         )
 
-    y = z[Y].astype(float)
-
     mco = sm.OLS(
-        y, X
+        z[Y], X
     ).fit()
 
-    robusto = sm.OLS(
-        y, X
+    hacfit = sm.OLS(
+        z[Y], X
     ).fit(
         cov_type="HAC",
         cov_kwds={"maxlags": hac},
         use_t=True,
     )
 
-    if not np.isfinite(
-        robusto.params.to_numpy()
-    ).all():
-        raise ValueError(
-            "Parámetros inválidos"
-        )
-
-    return robusto, mco, z, X
+    return hacfit, mco, z, X
 
 
-def tabla_coef(modelo):
-    ic = modelo.conf_int()
+def tabla_coef(m):
+    lim = m.conf_int()
 
     return pd.DataFrame({
-        "Regresor": modelo.params.index,
-        "Coeficiente": modelo.params.values,
-        "Error_HAC": modelo.bse.values,
-        "p_HAC": modelo.pvalues.values,
-        "IC_inf": ic.iloc[:, 0].values,
-        "IC_sup": ic.iloc[:, 1].values,
+        "Regresor": m.params.index,
+        "Coeficiente": m.params.values,
+        "Error HAC": m.bse.values,
+        "p HAC": m.pvalues.values,
+        "IC 95 % inf": lim.iloc[:, 0].values,
+        "IC 95 % sup": lim.iloc[:, 1].values,
     })
 
 
-def contraste_bloques(modelo, L=2):
+def bloques(m, L=2):
     filas = []
 
-    for nombre, prefijo in [
-        ("Transporte", "T"),
-        ("SIPSA", "P"),
+    for etiqueta_bloque, pref in [
+        ("RNDC / transporte", "T"),
+        ("SIPSA / precios", "P"),
     ]:
-        columnas = [
-            f"{prefijo}_L{j}"
-            for j in range(L + 1)
+        cols = [
+            f"{pref}_L{i}"
+            for i in range(L + 1)
         ]
 
         R = np.zeros(
-            (L + 1, len(modelo.params))
+            (len(cols), len(m.params))
         )
 
-        for i, col in enumerate(columnas):
-            R[
-                i,
-                modelo.params.index.get_loc(col)
-            ] = 1
+        for i, c in enumerate(cols):
+            R[i, m.params.index.get_loc(c)] = 1
 
-        prueba_f = modelo.wald_test(
+        joint = m.wald_test(
             R,
             use_f=True,
             scalar=True,
         )
 
-        prueba_suma = modelo.t_test(
+        summed = m.t_test(
             R.sum(axis=0)
         )
 
+        ci = summed.conf_int()[0]
+
         filas.append({
-            "Bloque": nombre,
-            "p_conjunto_HAC": float(prueba_f.pvalue),
-            "Suma": float(
-                modelo.params[columnas].sum()
-            ),
-            "IC_suma_inf": float(
-                prueba_suma.conf_int()[0, 0]
-            ),
-            "IC_suma_sup": float(
-                prueba_suma.conf_int()[0, 1]
-            ),
+            "Bloque": etiqueta_bloque,
+            "p conjunta HAC": float(joint.pvalue),
+            "Suma": float(m.params[cols].sum()),
+            "IC suma inf": float(ci[0]),
+            "IC suma sup": float(ci[1]),
         })
 
     return pd.DataFrame(filas)
 
 
-def diagnosticar(mco, z, X):
+def diagnosticos(mco, z, X):
     e = mco.resid
 
     valores = {
-        "Jarque_Bera_p": float(
-            jarque_bera(e)[1]
-        ),
-        "LjungBox_6_p": float(
+        "Jarque–Bera p": float(jarque_bera(e)[1]),
+        "Ljung–Box 6 p": float(
             acorr_ljungbox(
                 e,
                 lags=[6],
                 return_df=True,
             )["lb_pvalue"].iloc[0]
         ),
-        "LjungBox_12_p": float(
+        "Ljung–Box 12 p": float(
             acorr_ljungbox(
                 e,
                 lags=[12],
                 return_df=True,
             )["lb_pvalue"].iloc[0]
         ),
-        "BreuschGodfrey_3_p": float(
+        "Breusch–Godfrey p": float(
             acorr_breusch_godfrey(
-                mco,
-                nlags=3,
+                mco, nlags=3
             )[1]
         ),
-        "BreuschPagan_p": float(
+        "Breusch–Pagan p": float(
             het_breuschpagan(e, X)[1]
         ),
-        "CUSUM_p": float(
+        "CUSUM p": float(
             breaks_cusumolsresid(
                 e,
                 ddof=X.shape[1],
             )[1]
         ),
+        "Condición X": float(
+            np.linalg.cond(X)
+        ),
     }
 
     try:
-        valores["RESET_p"] = float(
+        valores["RESET p"] = float(
             linear_reset(
                 mco,
                 power=2,
                 use_f=True,
             ).pvalue
         )
-
     except Exception:
-        valores["RESET_p"] = np.nan
+        valores["RESET p"] = np.nan
 
-    valores["Numero_condicion"] = float(
-        np.linalg.cond(X)
-    )
+    resid = z[["mes", Y]].copy()
 
-    vif = []
-
-    for i, col in enumerate(X.columns):
-        if col != "const":
-            vif.append({
-                "Regresor": col,
-                "VIF": variance_inflation_factor(
-                    X.values, i
-                ),
-            })
-
-    datos = z[
-        ["mes", Y]
-    ].copy()
-
-    datos["Ajuste"] = (
-        mco.fittedvalues.to_numpy()
-    )
-
-    datos["Residuo"] = e.to_numpy()
-
-    datos["Cook"] = (
+    resid["Ajuste"] = mco.fittedvalues.to_numpy()
+    resid["Residuo"] = e.to_numpy()
+    resid["Cook"] = np.asarray(
         OLSInfluence(mco).cooks_distance[0]
     )
 
+    vif = pd.DataFrame([
+        {
+            "Regresor": c,
+            "VIF": variance_inflation_factor(
+                X.to_numpy(float), i
+            ),
+        }
+        for i, c in enumerate(X.columns)
+        if c != "const"
+    ])
+
     return (
         pd.DataFrame([valores]),
-        datos,
-        pd.DataFrame(vif),
+        resid,
+        vif,
     )
 
 
-def tabla_robustez(base):
-    opciones = [
-        (
-            f"{familia} L{L}",
-            dict(
-                L=L,
-                ar=(familia == "ARDL"),
-            ),
-        )
-        for familia in ("DL", "ARDL")
-        for L in range(4)
-    ]
-
-    opciones += [
-        (f"HAC({h})", dict(hac=h))
-        for h in (1, 6)
-    ]
-
-    opciones += [
-        (
-            "Excluir 2023-02",
-            dict(excluir="2023-02"),
-        ),
-        (
-            "Dummies trimestrales",
-            dict(estacionalidad=True),
-        ),
-    ]
-
-    alternativas_precios = (
-        "PM_no_ponderado_t",
-        "PM_ponderado_lagQ_t",
-        "PM_100",
-        "PM_95",
-    )
-
-    for alternativa in alternativas_precios:
-        if (
-            alternativa in base
-            and base[alternativa].notna().any()
-        ):
-            opciones.append((
-                f"SIPSA {alternativa}",
-                dict(precios=alternativa),
-            ))
-
-    alternativas_transporte = (
-        I,
-        "VAR_FLETE_FISHER_PCT",
-        "VAR_FLETE_CRUDO_PCT",
-        "VAR_FLETE_SIN_2000_PCT",
-    )
-
-    for alternativa in alternativas_transporte:
-        if (
-            alternativa in base
-            and base[alternativa].notna().any()
-        ):
-            opciones.append((
-                f"Transporte {alternativa}",
-                dict(transporte=alternativa),
-            ))
-
+def estacionariedad(d, cols):
     filas = []
 
-    for nombre, kwargs in opciones:
+    for c in cols:
         try:
-            m, o, z, _ = ajustar(
-                base,
-                **kwargs,
+            z = muestra(d, [c])
+
+            a = adfuller(
+                z[c],
+                autolag="AIC",
             )
 
-            prueba = contraste_bloques(
-                m,
-                kwargs.get("L", 2),
+            k = kpss(
+                z[c],
+                regression="c",
+                nlags="auto",
             )
 
             filas.append({
-                "Especificación": nombre,
+                "Serie": etiqueta(c),
                 "N": len(z),
-                "R2_aj": o.rsquared_adj,
-                "AIC": o.aic,
-                "BIC": o.bic,
-                "p_transporte": prueba.iloc[0]["p_conjunto_HAC"],
-                "p_SIPSA": prueba.iloc[1]["p_conjunto_HAC"],
-                "Suma_transporte": prueba.iloc[0]["Suma"],
-                "Estado": "OK",
+                "ADF": a[0],
+                "p ADF": a[1],
+                "KPSS": k[0],
+                "p KPSS (tab.)": k[1],
+                "Compatible I(0)": bool(
+                    a[1] < 0.05 and k[1] >= 0.05
+                ),
             })
 
-        except Exception as exc:
+        except Exception as e:
             filas.append({
-                "Especificación": nombre,
-                "Estado": str(exc)[:140],
+                "Serie": etiqueta(c),
+                "Estado": str(e)[:130],
             })
 
     return pd.DataFrame(filas)
 
 
-def ventanas_moviles(base, ancho=36):
-    z, columnas = construir_modelo(base)
+def robustez(d):
+    especificaciones = [
+        (
+            f"{tipo} L{l}",
+            {
+                "L": l,
+                "ar": tipo == "ARDL",
+            },
+        )
+        for tipo in ("DL", "ARDL")
+        for l in range(4)
+    ]
+
+    especificaciones += [
+        (f"HAC {h}", {"hac": h})
+        for h in (1, 6)
+    ]
+
+    especificaciones += [
+        (
+            "Sin febrero 2023",
+            {"excluir": "2023-02"},
+        ),
+        (
+            "Estacionalidad trimestral",
+            {"trimestres": True},
+        ),
+    ]
+
+    for c in [
+        "PM_no_ponderado_t",
+        "PM_ponderado_lagQ_t",
+        "PM_100",
+        "PM_95",
+    ]:
+        if c in d and d[c].notna().sum() >= 59:
+            especificaciones.append(
+                (f"SIPSA {c}", {"precio": c})
+            )
+
+    if I in d and d[I].notna().sum() == 84:
+        especificaciones.append(
+            (
+                "ICTC reemplaza RNDC",
+                {"transporte": I},
+            )
+        )
 
     filas = []
 
-    for inicio in range(len(z) - ancho + 1):
-        v = z.iloc[
-            inicio:inicio + ancho
-        ]
+    for name, params in especificaciones:
+        try:
+            m, o, z, _ = ardl(
+                d, **params
+            )
+
+            b = bloques(
+                m, params.get("L", 2)
+            )
+
+            filas.append({
+                "Especificación": name,
+                "N": len(z),
+                "R² aj.": o.rsquared_adj,
+                "AIC": o.aic,
+                "BIC": o.bic,
+                "p RNDC/ICTC": b.iloc[0]["p conjunta HAC"],
+                "p SIPSA": b.iloc[1]["p conjunta HAC"],
+                "Suma transporte": b.iloc[0]["Suma"],
+                "Estado": "OK",
+            })
+
+        except Exception as e:
+            filas.append({
+                "Especificación": name,
+                "Estado": str(e)[:140],
+            })
+
+    return pd.DataFrame(filas)
+
+
+def ventanas(d, ancho=36):
+    z, cols = matriz_ardl(d)
+    filas = []
+
+    for i in range(len(z) - ancho + 1):
+        v = z.iloc[i:i + ancho]
 
         X = sm.add_constant(
-            v[columnas],
+            v[cols],
             has_constant="add",
         )
 
@@ -1345,533 +1243,432 @@ def ventanas_moviles(base, ancho=36):
             use_t=True,
         )
 
-        pruebas = contraste_bloques(m)
+        b = bloques(m)
 
         filas.append({
             "Inicio": str(v["mes"].iloc[0]),
             "Fin": str(v["mes"].iloc[-1]),
-            "RNDC_suma": pruebas.iloc[0]["Suma"],
-            "RNDC_p": pruebas.iloc[0]["p_conjunto_HAC"],
-            "SIPSA_suma": pruebas.iloc[1]["Suma"],
+            "Suma RNDC": b.iloc[0]["Suma"],
+            "p conjunta RNDC": b.iloc[0]["p conjunta HAC"],
+            "Suma SIPSA": b.iloc[1]["Suma"],
         })
 
     return pd.DataFrame(filas)
 
 
-def comparar_huber(base):
-    z, columnas = construir_modelo(base)
+def huber(d):
+    z, cols = matriz_ardl(d)
 
     X = sm.add_constant(
-        z[columnas],
+        z[cols],
         has_constant="add",
     )
 
-    mco = sm.OLS(
+    a = sm.OLS(
         z[Y], X
     ).fit()
 
-    rlm = sm.RLM(
+    b = sm.RLM(
         z[Y],
         X,
         M=sm.robust.norms.HuberT(),
     ).fit()
 
+    return pd.DataFrame([
+        {
+            "Bloque": label,
+            "Suma MCO": a.params[
+                [f"{p}_L{i}" for i in range(3)]
+            ].sum(),
+            "Suma Huber": b.params[
+                [f"{p}_L{i}" for i in range(3)]
+            ].sum(),
+        }
+        for label, p in [
+            ("RNDC", "T"),
+            ("SIPSA", "P"),
+        ]
+    ])
+
+
+def trayectorias(m, var, h=6, shock=1.0):
+    cols = list(m.params.index)
+    cov = m.cov_params().to_numpy(float)
+
+    rho = float(
+        m.params.get("B_L1", 0)
+    )
+
+    pos = (
+        cols.index("B_L1")
+        if "B_L1" in cols
+        else None
+    )
+
+    g = np.zeros(len(cols))
+    r = 0
     filas = []
 
-    for nombre, prefijo in [
-        ("RNDC", "T"),
-        ("SIPSA", "P"),
-    ]:
-        columnas_bloque = [
-            f"{prefijo}_L{j}"
-            for j in range(3)
-        ]
+    pref = "T" if var == T else "P"
+
+    for paso in range(h + 1):
+        prev = r
+        old = g.copy()
+        nombre = f"{pref}_L{paso}"
+
+        r = (
+            rho * prev
+            + float(m.params.get(nombre, 0))
+        )
+
+        g = rho * old
+
+        if pos is not None:
+            g[pos] += prev
+
+        if nombre in cols:
+            g[cols.index(nombre)] += 1
+
+        error = np.sqrt(
+            max(float(g @ cov @ g), 0)
+        )
 
         filas.append({
-            "Bloque": nombre,
-            "Suma_MCO": float(
-                mco.params[columnas_bloque].sum()
-            ),
-            "Suma_Huber": float(
-                rlm.params[columnas_bloque].sum()
-            ),
+            "Mes": paso,
+            "Respuesta": shock * r,
+            "IC inf": shock * r - 1.96 * abs(shock) * error,
+            "IC sup": shock * r + 1.96 * abs(shock) * error,
         })
 
     return pd.DataFrame(filas)
 
 
-def pruebas_estacionariedad(base, variables):
-    filas = []
-
-    for col in variables:
-        try:
-            d = muestra_comun(
-                base,
-                [col],
-                24,
-            )
-
-            a = adfuller(
-                d[col],
-                autolag="AIC",
-            )
-
-            k = kpss(
-                d[col],
-                regression="c",
-                nlags="auto",
-            )
-
-            filas.append({
-                "Variable": NOMBRES.get(col, col),
-                "N": len(d),
-                "ADF": a[0],
-                "p_ADF": a[1],
-                "KPSS": k[0],
-                "p_KPSS_acotado": k[1],
-                "I0_orientativo": (
-                    a[1] < 0.05
-                    and k[1] >= 0.05
-                ),
-            })
-
-        except Exception as exc:
-            filas.append({
-                "Variable": NOMBRES.get(col, col),
-                "Estado": str(exc)[:120],
-            })
-
-    return pd.DataFrame(filas)
-
-
-def pca_kmeans(base, variables, k):
-    d = muestra_comun(
-        base,
-        variables,
-        59,
-    )
+def pca_clusters(d, cols, k):
+    z = muestra(d, cols)
 
     X = StandardScaler().fit_transform(
-        d[variables]
+        z[cols]
     )
 
     pca = PCA(n_components=2)
+    scores = pca.fit_transform(X)
 
-    plano = pca.fit_transform(X)
-
-    grupos = KMeans(
+    etiquetas = KMeans(
         n_clusters=k,
         random_state=42,
         n_init=20,
     ).fit_predict(X)
 
-    resultado = pd.DataFrame({
-        "mes": d["mes"].astype(str),
-        "PC1": plano[:, 0],
-        "PC2": plano[:, 1],
-        "Grupo": grupos.astype(str),
+    puntos = pd.DataFrame({
+        "Mes": z["mes"].astype(str),
+        "PC1": scores[:, 0],
+        "PC2": scores[:, 1],
+        "Grupo": etiquetas.astype(str),
     })
 
     cargas = pd.DataFrame(
         pca.components_.T,
-        index=variables,
+        index=[etiqueta(c) for c in cols],
         columns=["PC1", "PC2"],
     )
 
     return (
-        resultado,
+        puntos,
         cargas,
         pca.explained_variance_ratio_,
     )
 
 
-def var_condicional(base, variables, lags, horizonte):
-    d = muestra_comun(
-        base,
-        variables,
-        59,
-    )
+def var_exploratorio(d, cols, lags, h):
+    z = muestra(d, cols)
 
-    pruebas = pruebas_estacionariedad(
-        base,
-        variables,
-    )
+    for c in cols:
+        a = adfuller(
+            z[c],
+            autolag="AIC",
+        )[1]
 
-    if not pruebas["I0_orientativo"].fillna(False).all():
-        raise ValueError(
-            "VAR en niveles no habilitado: "
-            "no hay evidencia conjunta de I(0)"
-        )
+        k = kpss(
+            z[c],
+            regression="c",
+            nlags="auto",
+        )[1]
 
-    modelo = VAR(
-        d[variables]
+        if not (a < 0.05 and k >= 0.05):
+            raise ValueError(
+                "VAR en niveles exige evidencia I(0) "
+                "para todas las series"
+            )
+
+    m = VAR(
+        z[cols]
     ).fit(lags)
 
-    if not modelo.is_stable():
-        raise ValueError(
-            "VAR inestable: se omiten las IRF"
-        )
+    if not m.is_stable():
+        raise ValueError("VAR inestable")
 
-    return (
-        modelo,
-        modelo.irf(horizonte).irfs,
-    )
+    return m, m.irf(h).irfs
 
 
-def evaluar_vecm(base, variables):
-    d = muestra_comun(
-        base,
-        variables,
-        59,
-    )
+def cointegracion(d, cols):
+    z = muestra(d, cols)
 
-    filas = []
-
-    for variable in variables:
-        filas.append({
-            "Variable": variable,
-            "ADF_p_nivel": adfuller(
-                d[variable],
+    test = pd.DataFrame([
+        {
+            "Serie": etiqueta(c),
+            "ADF p nivel": adfuller(
+                z[c],
                 autolag="AIC",
             )[1],
-            "ADF_p_diferencia": adfuller(
-                d[variable].diff().dropna(),
+            "ADF p diferencia": adfuller(
+                z[c].diff().dropna(),
                 autolag="AIC",
             )[1],
-        })
-
-    tabla = pd.DataFrame(filas)
+        }
+        for c in cols
+    ])
 
     condicion = (
-        (tabla["ADF_p_nivel"] >= 0.05)
-        & (tabla["ADF_p_diferencia"] < 0.05)
+        (test["ADF p nivel"] >= 0.05)
+        & (test["ADF p diferencia"] < 0.05)
     )
 
     if not condicion.all():
-        return tabla, None
+        return test, None
 
-    johansen = coint_johansen(
-        d[variables],
+    j = coint_johansen(
+        z[cols],
         det_order=0,
         k_ar_diff=1,
     )
 
-    resultados = pd.DataFrame({
-        "Traza": johansen.lr1,
-        "Crítico_95": johansen.cvt[:, 1],
+    return test, pd.DataFrame({
+        "Traza": j.lr1,
+        "Crítico 95 %": j.cvt[:, 1],
     })
 
-    return tabla, resultados
 
-
-def multiplicadores(modelo, variable, cambio, horizonte):
-    parametros = list(
-        modelo.params.index
-    )
-
-    cov = modelo.cov_params().to_numpy(float)
-
-    rho = float(
-        modelo.params.get("B_L1", 0.0)
-    )
-
-    posicion_rho = (
-        parametros.index("B_L1")
-        if "B_L1" in parametros
-        else None
-    )
-
-    resultado = 0.0
-    derivada = np.zeros(len(parametros))
-    filas = []
-
-    for h in range(horizonte + 1):
-        previo = resultado
-        previo_g = derivada.copy()
-
-        prefijo = "T" if variable == T else "P"
-        nombre = f"{prefijo}_L{h}"
-
-        resultado = (
-            rho * previo
-            + float(modelo.params.get(nombre, 0.0))
-        )
-
-        derivada = rho * previo_g
-
-        if posicion_rho is not None:
-            derivada[posicion_rho] += previo
-
-        if nombre in parametros:
-            derivada[parametros.index(nombre)] += 1
-
-        varianza = float(
-            derivada @ cov @ derivada
-        )
-
-        error = np.sqrt(max(varianza, 0.0))
-
-        filas.append({
-            "Horizonte": h,
-            "Respuesta_pp": cambio * resultado,
-            "IC95_inf": (
-                cambio * resultado
-                - 1.96 * abs(cambio) * error
-            ),
-            "IC95_sup": (
-                cambio * resultado
-                + 1.96 * abs(cambio) * error
-            ),
-        })
-
-    return pd.DataFrame(filas)
-
-
-def evaluar_ml(base, elegidos):
-    d = muestra_comun(
-        base,
+def ml_cronologico(d, seleccion):
+    z = muestra(
+        d,
         [Y, T, P],
-        59,
     )
 
-    tabla = pd.DataFrame({
-        "mes": d["mes"],
-        "objetivo": d[Y],
+    X = pd.DataFrame({
+        "mes": z["mes"],
+        "objetivo": z[Y],
     })
 
-    for variable in (Y, T, P):
-        for lag in (1, 2):
-            tabla[f"{variable}_L{lag}"] = (
-                d[variable].shift(lag)
-            )
+    for c in [Y, T, P]:
+        for lag in [1, 2]:
+            X[f"{c}_L{lag}"] = z[c].shift(lag)
 
-    tabla = tabla.dropna().reset_index(drop=True)
+    X = X.dropna().reset_index(drop=True)
 
-    variables = [
-        c for c in tabla.columns
-        if c not in ("mes", "objetivo")
+    cols = [
+        c for c in X
+        if c not in ["mes", "objetivo"]
     ]
 
-    inicio = len(tabla) - 26
-
-    if inicio < 20:
-        raise ValueError(
-            "Muestra de entrenamiento insuficiente"
-        )
-
+    inicio = len(X) - 26
     filas = []
 
-    for t in range(inicio, len(tabla)):
-        train = tabla.iloc[:t]
-        test = tabla.iloc[[t]]
+    modelos = {
+        "Ridge": Ridge(alpha=1.0),
+        "Lasso": Lasso(
+            alpha=0.01,
+            max_iter=10000,
+        ),
+        "SVR": SVR(),
+        "MLP": MLPRegressor(
+            hidden_layer_sizes=(12,),
+            max_iter=500,
+            random_state=42,
+        ),
+    }
 
-        X = train[variables].to_numpy(float)
-        Xt = test[variables].to_numpy(float)
-        y = train["objetivo"].to_numpy(float)
+    for i in range(inicio, len(X)):
+        ent = X.iloc[:i]
+        pr = X.iloc[[i]]
 
-        escalador = StandardScaler().fit(X)
+        tr = ent[cols].to_numpy(float)
+        te = pr[cols].to_numpy(float)
 
-        valores = {
+        y = ent["objetivo"].to_numpy(float)
+
+        sc = StandardScaler().fit(tr)
+
+        pred = {
             "Media histórica": float(y.mean())
         }
 
-        ar_x = sm.add_constant(
-            train[[f"{Y}_L1"]],
-            has_constant="add",
-        )
-
-        ar_xt = sm.add_constant(
-            test[[f"{Y}_L1"]],
-            has_constant="add",
-        )
-
-        ajuste_ar = sm.OLS(
-            y, ar_x
-        ).fit()
-
-        valores["AR(1)"] = float(
-            ajuste_ar.predict(ar_xt).iloc[0]
-        )
-
-        ajuste_arx = sm.OLS(
+        ar1 = sm.OLS(
             y,
             sm.add_constant(
-                X,
+                ent[[f"{Y}_L1"]],
                 has_constant="add",
             ),
         ).fit()
 
-        valores["ARX"] = float(
-            ajuste_arx.predict(
+        pred["AR(1)"] = float(
+            ar1.predict(
                 sm.add_constant(
-                    Xt,
+                    pr[[f"{Y}_L1"]],
+                    has_constant="add",
+                )
+            ).iloc[0]
+        )
+
+        arx = sm.OLS(
+            y,
+            sm.add_constant(
+                tr,
+                has_constant="add",
+            ),
+        ).fit()
+
+        pred["ARX"] = float(
+            arx.predict(
+                sm.add_constant(
+                    te,
                     has_constant="add",
                 )
             )[0]
         )
 
-        modelos = {
-            "Ridge": Ridge(alpha=1.0),
-            "Lasso": Lasso(
-                alpha=0.01,
-                max_iter=15000,
-            ),
-            "SVR": SVR(
-                C=1.0,
-                epsilon=0.1,
-            ),
-            "MLP": MLPRegressor(
-                hidden_layer_sizes=(12,),
-                max_iter=400,
-                random_state=42,
-            ),
-        }
-
-        for nombre, modelo in modelos.items():
-            if nombre in elegidos:
-                modelo.fit(
-                    escalador.transform(X),
+        for nombre, m in modelos.items():
+            if nombre in seleccion:
+                m.fit(
+                    sc.transform(tr),
                     y,
                 )
 
-                valores[nombre] = float(
-                    modelo.predict(
-                        escalador.transform(Xt)
+                pred[nombre] = float(
+                    m.predict(
+                        sc.transform(te)
                     )[0]
                 )
 
-        for nombre, prediccion in valores.items():
-            if nombre in elegidos:
+        for nombre, valor in pred.items():
+            if nombre in seleccion:
                 filas.append({
-                    "mes": str(test["mes"].iloc[0]),
+                    "Mes": str(pr["mes"].iloc[0]),
                     "Modelo": nombre,
-                    "Observado": float(
-                        test["objetivo"].iloc[0]
+                    "Real": float(
+                        pr["objetivo"].iloc[0]
                     ),
-                    "Predicho": prediccion,
+                    "Predicho": valor,
                 })
 
-    pronosticos = pd.DataFrame(filas)
+    resultados = pd.DataFrame(filas)
 
     resumen = pd.DataFrame([
         {
             "Modelo": nombre,
-            "RMSE": np.sqrt(
-                mean_squared_error(
-                    grupo["Observado"],
-                    grupo["Predicho"],
+            "N": len(g),
+            "RMSE": float(
+                np.sqrt(
+                    mean_squared_error(
+                        g.Real, g.Predicho
+                    )
                 )
             ),
-            "MAE": mean_absolute_error(
-                grupo["Observado"],
-                grupo["Predicho"],
+            "MAE": float(
+                mean_absolute_error(
+                    g.Real, g.Predicho
+                )
             ),
         }
-        for nombre, grupo in pronosticos.groupby("Modelo")
+        for nombre, g in resultados.groupby("Modelo")
     ]).sort_values("RMSE")
 
-    return (
-        resumen,
-        pronosticos,
-        tabla,
-        variables,
-        inicio,
+    return resumen, resultados, X, cols, inicio
+
+
+def xai_permutacion(tabla, cols, inicio, nombre):
+    X = tabla[cols].to_numpy(float)
+    y = tabla["objetivo"].to_numpy(float)
+
+    sc = StandardScaler().fit(
+        X[:inicio]
     )
 
-
-def xai(datos, variables, inicio, modelo_nombre):
     modelos = {
-        "Ridge": Ridge(alpha=1.0),
+        "Ridge": Ridge(),
         "Lasso": Lasso(
             alpha=0.01,
-            max_iter=15000,
+            max_iter=10000,
         ),
-        "SVR": SVR(
-            C=1.0,
-            epsilon=0.1,
-        ),
+        "SVR": SVR(),
         "MLP": MLPRegressor(
             hidden_layer_sizes=(12,),
-            max_iter=400,
+            max_iter=500,
             random_state=42,
         ),
     }
 
-    X = datos[variables].to_numpy(float)
-    y = datos["objetivo"].to_numpy(float)
-
-    escalador = StandardScaler().fit(
-        X[:inicio]
-    )
-
-    modelo = modelos[modelo_nombre].fit(
-        escalador.transform(X[:inicio]),
+    m = modelos[nombre].fit(
+        sc.transform(X[:inicio]),
         y[:inicio],
     )
 
-    importancia = permutation_importance(
-        modelo,
-        escalador.transform(X[inicio:]),
+    res = permutation_importance(
+        m,
+        sc.transform(X[inicio:]),
         y[inicio:],
-        n_repeats=10,
+        n_repeats=12,
         random_state=42,
         scoring="neg_mean_squared_error",
     )
 
     return pd.DataFrame({
-        "Regresor": variables,
-        "Importancia": importancia.importances_mean,
-        "Desviación": importancia.importances_std,
+        "Regresor": cols,
+        "Importancia": res.importances_mean,
+        "Desviación": res.importances_std,
     }).sort_values("Importancia")
 
 
-def senales_historicas(base):
-    d = muestra_comun(
-        base,
-        [T, P],
-        59,
-    )
-
+def semaforo(d):
+    z = muestra(d, [T, P])
     filas = []
 
-    for i in range(12, len(d)):
-        anteriores = d.iloc[:i]
-        actual = d.iloc[i]
+    for i in range(12, len(z)):
+        anterior = z.iloc[:i]
+        actual = z.iloc[i]
 
-        umbral_t = anteriores[T].quantile(0.90)
-        umbral_p = anteriores[P].quantile(0.90)
+        uT = anterior[T].quantile(0.90)
+        uP = anterior[P].quantile(0.90)
 
-        alto_t = actual[T] > umbral_t
-        alto_p = actual[P] > umbral_p
-
-        if alto_t and alto_p:
-            senal = "Rojo"
-        elif alto_t or alto_p:
-            senal = "Amarillo"
-        else:
-            senal = "Verde"
+        n = (
+            int(actual[T] > uT)
+            + int(actual[P] > uP)
+        )
 
         filas.append({
-            "mes": str(actual["mes"]),
+            "Mes": str(actual.mes),
             "RNDC": actual[T],
             "SIPSA": actual[P],
-            "Umbral_RNDC": umbral_t,
-            "Umbral_SIPSA": umbral_p,
-            "Señal": senal,
+            "Umbral RNDC": uT,
+            "Umbral SIPSA": uP,
+            "Semáforo": (
+                "Verde",
+                "Amarillo",
+                "Rojo",
+            )[n],
         })
 
     return pd.DataFrame(filas)
 
 
-def figura(fig, altura=430):
+def grafico(fig, h=430):
     fig.update_layout(
-        **STYLE,
-        height=altura,
+        template="plotly_dark",
+        paper_bgcolor="#0e1729",
+        plot_bgcolor="#101b2e",
+        font=dict(color="#dbeafe"),
+        height=h,
         margin=dict(
-            l=20,
-            r=20,
-            t=55,
-            b=35,
+            t=58, l=24, r=24, b=30
         ),
     )
 
@@ -1883,314 +1680,402 @@ def figura(fig, altura=430):
     return fig
 
 
-def exportar(df, nombre, etiqueta="Descargar CSV"):
-    d = df.copy()
+def serie_grafico(d, cols, titulo):
+    tmp = d[
+        ["mes"] + cols
+    ].copy()
+
+    tmp["mes"] = tmp["mes"].astype(str)
+
+    if len(cols) == 1:
+        return grafico(
+            px.line(
+                tmp,
+                x="mes",
+                y=cols[0],
+                title=titulo,
+                labels={cols[0]: etiqueta(cols[0])},
+            )
+        )
+
+    fig = go.Figure()
+
+    for c in cols:
+        s = tmp[
+            ["mes", c]
+        ].dropna()
+
+        fig.add_trace(
+            go.Scatter(
+                x=s.mes,
+                y=s[c],
+                mode="lines",
+                name=etiqueta(c),
+            )
+        )
+
+    fig.update_layout(
+        title=titulo,
+        yaxis_title="Unidades originales; comparar con precaución",
+    )
+
+    return grafico(fig)
+
+
+def exportar(d, nombre):
+    d = d.copy()
 
     if "mes" in d:
         d["mes"] = d["mes"].astype(str)
 
     st.download_button(
-        etiqueta,
-        d.to_csv(index=False).encode("utf-8-sig"),
+        "⬇️ Descargar tabla CSV",
+        data=d.to_csv(
+            index=False
+        ).encode("utf-8-sig"),
         file_name=nombre,
         mime="text/csv",
     )
 
 
-def grafico_series(base, variables, titulo):
-    datos = base[
-        ["mes"] + variables
-    ].copy()
-
-    datos["mes"] = datos["mes"].astype(str)
-
-    largo = datos.melt(
-        id_vars="mes",
-        var_name="Variable",
-        value_name="Valor",
-    )
-
-    largo["Variable"] = largo["Variable"].map(
-        lambda c: NOMBRES.get(c, c)
-    )
-
-    if len(variables) > 1:
-        graf = px.line(
-            largo,
-            x="mes",
-            y="Valor",
-            color="Variable",
-            facet_row="Variable",
-            title=titulo,
-        )
-
-        graf.for_each_yaxis(
-            lambda eje: eje.update(matches=None)
-        )
-
-        return figura(
-            graf,
-            altura=max(430, len(variables) * 210),
-        )
-
-    return figura(
-        px.line(
-            largo,
-            x="mes",
-            y="Valor",
-            color="Variable",
-            title=titulo,
-        )
-    )
-
-
-def disponibles(base, variables):
-    faltantes = [
-        c for c in variables
-        if c not in base
-        or base[c].notna().sum() == 0
+def necesita(d, cols):
+    faltan = [
+        c for c in cols
+        if c not in d
+        or d[c].notna().sum() == 0
     ]
 
-    if faltantes:
-        st.warning(
-            "No hay datos suficientes: "
+    if faltan:
+        st.info(
+            "No están disponibles estas series: "
             + ", ".join(
-                NOMBRES.get(x, x)
-                for x in faltantes
+                etiqueta(c) for c in faltan
             )
         )
 
-    return not faltantes
+    return not faltan
 
 
 with st.sidebar:
-    st.title("📊 Observatorio Pasto")
+    st.markdown("### 📊 OBSERVATORIO")
+    st.caption(
+        "Pasto · El Potrerillo · Transporte regional"
+    )
 
     pagina = st.radio(
-        "Navegación",
+        "Explorar",
         [
             "🏠 Inicio",
-            "🗂️ Datos y muestras",
-            "📊 Análisis Pasto–Nariño",
+            "📚 Datos y muestras",
+            "📊 Análisis económico",
             "📑 Generador de informes",
-            "💬 Chatbot",
+            "💬 Asistente estadístico",
             "© Fuentes y créditos",
         ],
     )
 
     st.divider()
 
-    inicio, fin = st.select_slider(
-        "Periodo descriptivo",
-        options=[
-            str(x) for x in MES_84
-        ],
-        value=("2018-01", "2024-12"),
+    periodos = [
+        str(v) for v in M84
+    ]
+
+    desde, hasta = st.select_slider(
+        "Periodo de visualización",
+        options=periodos,
+        value=(periodos[0], periodos[-1]),
     )
 
-    st.caption(
-        "Los modelos del artículo conservan la muestra "
-        "de 56 meses y no cambian con este filtro."
-    )
-
-    if st.button("Actualizar fuentes"):
-        cargar_datos.clear()
+    if st.button("🔄 Actualizar datos públicos"):
+        cargar_base.clear()
         st.rerun()
 
 
-try:
-    DATA, AUDITORIA, ERRORES = cargar_datos()
+DATA, AUDITORIA, INCIDENCIAS = cargar_base()
 
-except Exception as exc:
-    st.error(
-        f"No se pudo construir el observatorio: {exc}"
-    )
-    st.stop()
-
-
-VARS = [
-    c for c in (Y, T, P, I)
+DISP = [
+    c for c in NOM
     if c in DATA
     and DATA[c].notna().any()
 ]
 
+VARS = [
+    c for c in [Y, T, P, I]
+    if c in DISP
+]
+
 VISTA = DATA[
-    (DATA["mes"] >= pd.Period(inicio))
-    & (DATA["mes"] <= pd.Period(fin))
+    DATA["mes"].between(
+        pd.Period(desde),
+        pd.Period(hasta),
+    )
 ].copy()
 
 
 if pagina == "🏠 Inicio":
     st.title(
-        "Observatorio económico de Pasto y Nariño"
+        "Observatorio Económico de Pasto y Nariño"
     )
 
-    st.write(
-        "Costos del transporte de carga, precios mayoristas "
-        "de El Potrerillo y brecha inflacionaria "
-        "Pasto–Colombia · 2018–2024"
-    )
+    st.markdown("""
+<div class='hero'>
+<h2>¡Bienvenidos al observatorio! 👋</h2>
+<p>
+Explora con gráficos interactivos cómo evolucionaron
+los fletes regionales, los precios mayoristas de
+El Potrerillo y la brecha inflacionaria entre Pasto
+y Colombia durante 2018–2024.
+Usa el menú para comparar indicadores, analizar
+relaciones, probar modelos y descargar resultados.
+</p>
+</div>
+""", unsafe_allow_html=True)
 
-    st.info(
-        "Pasto es la ciudad analizada. Los resultados "
-        "no representan automáticamente todo Nariño."
-    )
+    tarjetas = st.columns(4)
 
-    columnas = st.columns(4)
-
-    for panel, variable in zip(
-        columnas,
-        [Y, P, T, I],
+    for col, variable in zip(
+        tarjetas, [Y, P, T, I]
     ):
         n = (
-            int(DATA[variable].notna().sum())
+            int(DATA[variable].count())
             if variable in DATA
             else 0
         )
 
-        panel.metric(
-            NOMBRES[variable],
-            f"{n} meses" if n else "No disponible",
+        col.metric(
+            etiqueta(variable),
+            f"{n} meses" if n else "Pendiente",
         )
 
-    if VARS:
-        grafico_series(
-            VISTA,
+    a, b = st.columns([1.55, 1])
+
+    with a:
+        st.subheader("Pulso mensual de la región")
+
+        selec = (
+            st.selectbox(
+                "Indicador",
+                VARS,
+                format_func=etiqueta,
+            )
+            if VARS else None
+        )
+
+        if selec:
+            serie_grafico(
+                VISTA,
+                [selec],
+                etiqueta(selec),
+            )
+
+    with b:
+        st.subheader("Panorama de la muestra")
+
+        cobertura = pd.DataFrame([
+            {
+                "Serie": etiqueta(c),
+                "Meses": int(DATA[c].count()),
+                "Participación %": (
+                    100 * DATA[c].count() / 84
+                ),
+            }
+            for c in VARS
+        ])
+
+        if not cobertura.empty:
+            grafico(
+                px.bar(
+                    cobertura,
+                    x="Meses",
+                    y="Serie",
+                    orientation="h",
+                    title="Cobertura disponible",
+                ),
+                420,
+            )
+
+    if len(VARS) > 1:
+        st.subheader("Comparador de evolución")
+
+        seleccion = st.multiselect(
+            "Compara series",
             VARS,
-            "Evolución mensual de las series observadas",
+            default=VARS[:min(3, len(VARS))],
+            format_func=etiqueta,
         )
 
-    st.markdown(
-        "**Estructura:** 84 meses descriptivos; "
-        "59 meses comunes; 56 observaciones para DL/ARDL. "
-        "Fuentes: DANE y RNDC del Ministerio de Transporte, "
-        "con respaldos en GitHub."
+        if seleccion:
+            normalizado = st.toggle(
+                "Mostrar en desviaciones estándar (solo gráfica)",
+                value=True,
+            )
+
+            comp = VISTA[
+                ["mes"] + seleccion
+            ].copy()
+
+            if normalizado:
+                for c in seleccion:
+                    if comp[c].std() > 0:
+                        comp[c] = (
+                            comp[c] - comp[c].mean()
+                        ) / comp[c].std()
+
+            serie_grafico(
+                comp,
+                seleccion,
+                "Evolución comparada",
+            )
+
+    st.subheader("Explora por herramienta")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.markdown(
+        "**📊 Estadística y econometría**\n\n"
+        "EDA, ADF/KPSS, ARDL, HAC, diagnósticos y robustez."
     )
 
-    st.warning(
-        "Análisis estadístico asociativo. "
-        "No constituye un sistema validado de "
-        "predicción de cierres viales."
+    col2.markdown(
+        "**🧩 Analítica avanzada**\n\n"
+        "PCA, K-Means, VAR, Machine Learning y explicabilidad."
+    )
+
+    col3.markdown(
+        "**🎯 Aplicaciones**\n\n"
+        "Escenarios, episodio 2021, consultas e informes exportables."
     )
 
 
-elif pagina == "🗂️ Datos y muestras":
-    st.header("Datos, cobertura y auditoría")
+elif pagina == "📚 Datos y muestras":
+    st.title("Datos y muestras")
 
-    cobertura = []
-
-    for variable in [Y, T, P, I]:
-        fechas = (
-            DATA.loc[
-                DATA[variable].notna(),
-                "mes",
-            ]
-            if variable in DATA
-            else pd.Series(dtype=object)
-        )
-
-        cobertura.append({
-            "Indicador": NOMBRES[variable],
-            "N": len(fechas),
-            "Desde": (
-                str(fechas.min())
-                if len(fechas)
-                else "—"
+    cob = pd.DataFrame([
+        {
+            "Indicador": etiqueta(c),
+            "Observaciones": int(DATA[c].count()),
+            "Desde": str(
+                DATA.loc[
+                    DATA[c].notna(), "mes"
+                ].min()
             ),
-            "Hasta": (
-                str(fechas.max())
-                if len(fechas)
-                else "—"
+            "Hasta": str(
+                DATA.loc[
+                    DATA[c].notna(), "mes"
+                ].max()
             ),
-        })
+        }
+        for c in DISP
+    ])
 
     st.dataframe(
-        pd.DataFrame(cobertura),
-        hide_index=True,
+        cob,
         use_container_width=True,
+        hide_index=True,
     )
 
-    st.subheader("Fuentes y SHA-256")
+    st.subheader("Explorador de observaciones")
+
+    elegidos = st.multiselect(
+        "Variables",
+        DISP,
+        default=VARS,
+        format_func=etiqueta,
+    )
+
+    if elegidos:
+        tabla = VISTA[
+            ["mes"] + elegidos
+        ].copy()
+
+        tabla["mes"] = tabla["mes"].astype(str)
+
+        st.dataframe(
+            tabla,
+            use_container_width=True,
+            hide_index=True,
+            height=370,
+        )
+
+        exportar(
+            tabla,
+            "observaciones_pasto.csv",
+        )
+
+    st.subheader("Procedencia y verificación")
 
     st.dataframe(
         AUDITORIA,
+        use_container_width=True,
         hide_index=True,
-        use_container_width=True,
     )
 
-    exportar(
-        AUDITORIA,
-        "auditoria_fuentes.csv",
-    )
+    if INCIDENCIAS:
+        with st.expander(
+            f"Detalles técnicos de carga ({len(INCIDENCIAS)})"
+        ):
+            for i in INCIDENCIAS:
+                st.write(i)
 
-    with st.expander(
-        f"Incidencias ({len(ERRORES)})"
-    ):
-        for error in ERRORES:
-            st.write(error)
+    if P not in DISP:
+        st.subheader(
+            "Preparar el indicador SIPSA desde sus archivos originales"
+        )
 
-    st.dataframe(
-        DATA.assign(
-            mes=DATA["mes"].astype(str)
-        ),
-        use_container_width=True,
-    )
-
-    exportar(
-        DATA,
-        "base_integrada_observada.csv",
-    )
-
-    if (
-        P not in DATA
-        or DATA[P].notna().sum() != 84
-    ):
-        st.warning(
-            "SIPSA no está completo. La reconstrucción "
-            "utiliza las fases 1–7 del Colab verificadas "
-            "por SHA-256 y los ZIP del DANE respaldados "
-            "en GitHub."
+        st.write(
+            "La app ya buscó productos mensuales publicados en GitHub. "
+            "Si no existen, puede ejecutar la fase exacta del Colab auditado, "
+            "con descarga de respaldos oficiales. Es una reconstrucción "
+            "de mayor tamaño que se guarda en caché."
         )
 
         if st.button(
-            "Reconstruir SIPSA sin subir archivos",
+            "Reconstruir SIPSA automáticamente",
             type="primary",
         ):
             try:
-                st.success(reconstruir_sipsa())
-                cargar_datos.clear()
+                with st.spinner(
+                    "Reconstruyendo SIPSA desde el procedimiento del proyecto…"
+                ):
+                    salida = reconstruir_sipsa()
+
+                st.success(
+                    f"Indicador generado: {salida.name}"
+                )
+
+                cargar_base.clear()
                 st.rerun()
 
-            except Exception as exc:
+            except Exception as e:
                 st.error(
-                    f"Reconstrucción no completada: {exc}"
+                    f"Reconstrucción no finalizada: {e}"
                 )
 
 
-elif pagina == "📊 Análisis Pasto–Nariño":
-    st.header(
-        "Herramientas estadísticas y econométricas"
+elif pagina == "📊 Análisis económico":
+    st.title(
+        "Laboratorio estadístico y econométrico"
     )
 
-    tabs = st.tabs([
-        "EDA",
-        "ADF / KPSS",
-        "ARDL + HAC",
-        "Diagnósticos",
-        "Robustez",
-        "PCA / K-Means",
-        "VAR / VECM",
-        "ML / XAI",
-        "Simulador",
-        "Focus Pasto",
+    tab = st.tabs([
+        "📊 EDA",
+        "📈 Estacionariedad",
+        "🧮 ARDL + HAC",
+        "🩺 Diagnósticos",
+        "🛡️ Robustez",
+        "🧩 PCA / K-Means",
+        "🔁 VAR / VECM",
+        "🤖 ML y XAI",
+        "🎛️ Simulador",
+        "📍 Focus Pasto",
     ])
 
-    with tabs[0]:
+    with tab[0]:
         elegir = st.multiselect(
-            "Series para EDA",
-            VARS,
+            "Indicadores para explorar",
+            DISP,
             default=VARS,
-            format_func=lambda c: NOMBRES[c],
+            format_func=etiqueta,
         )
 
         if elegir:
@@ -2199,445 +2084,625 @@ elif pagina == "📊 Análisis Pasto–Nariño":
                 use_container_width=True,
             )
 
-            grafico_series(
+            serie_grafico(
                 VISTA,
-                elegir,
-                "Series seleccionadas",
+                [elegir[0]],
+                "Dinámica del indicador",
             )
 
             if len(elegir) > 1:
-                correlacion = VISTA[elegir].corr(
-                    min_periods=12
+                st.markdown(
+                    "**Matriz de correlación**"
                 )
 
-                figura(
+                tipo = st.radio(
+                    "Método",
+                    ["pearson", "spearman"],
+                    horizontal=True,
+                )
+
+                corr = VISTA[elegir].corr(
+                    method=tipo,
+                    min_periods=12,
+                )
+
+                grafico(
                     px.imshow(
-                        correlacion,
-                        text_auto=".3f",
+                        corr,
+                        text_auto=".2f",
                         zmin=-1,
                         zmax=1,
                         color_continuous_scale="RdBu_r",
-                        title="Correlación de Pearson",
+                        title="Asociación bivariada",
                     )
                 )
 
-            exportar(
-                VISTA[["mes"] + elegir],
-                "series_eda.csv",
+                a, b = st.columns(2)
+
+                with a:
+                    x = st.selectbox(
+                        "Eje X",
+                        elegir,
+                        format_func=etiqueta,
+                    )
+
+                with b:
+                    y = st.selectbox(
+                        "Eje Y",
+                        elegir,
+                        index=1,
+                        format_func=etiqueta,
+                    )
+
+                puntos = VISTA[
+                    [x, y]
+                ].dropna()
+
+                grafico(
+                    px.scatter(
+                        puntos,
+                        x=x,
+                        y=y,
+                        title="Dispersión de variables",
+                    )
+                )
+
+            grafico(
+                px.box(
+                    VISTA[elegir].rename(
+                        columns=NOM
+                    ),
+                    points="outliers",
+                    title="Dispersión y valores extremos",
+                )
             )
 
-    with tabs[1]:
+            exportar(
+                VISTA[["mes"] + elegir],
+                "eda_series.csv",
+            )
+
+    with tab[1]:
         if VARS:
-            estacionarias = pruebas_estacionariedad(
-                DATA,
-                VARS,
+            res = estacionariedad(
+                DATA, VARS
             )
 
             st.dataframe(
-                estacionarias,
-                hide_index=True,
+                res,
                 use_container_width=True,
-            )
-
-            st.caption(
-                "ADF: nula de raíz unitaria. "
-                "KPSS: nula de estacionariedad. "
-                "Los valores p de KPSS son tabulados."
+                hide_index=True,
             )
 
             exportar(
-                estacionarias,
-                "estacionariedad.csv",
+                res,
+                "adf_kpss.csv",
             )
 
-    with tabs[2]:
-        st.latex(
-            r"B_t=\alpha+\rho B_{t-1}"
-            r"+\sum_{j=0}^{L}\beta_jT_{t-j}"
-            r"+\sum_{j=0}^{L}\gamma_jPM_{t-j}+u_t"
-        )
+            a = st.selectbox(
+                "Correlograma de la variable",
+                VARS,
+                format_func=etiqueta,
+            )
 
-        c1, c2, c3 = st.columns(3)
-
-        L = c1.slider(
-            "Rezagos", 0, 3, 2
-        )
-
-        ar = c2.checkbox(
-            "Incluir brecha rezagada",
-            True,
-        )
-
-        hac = c3.slider(
-            "Ancho HAC", 0, 8, 3
-        )
-
-        if disponibles(DATA, [Y, T, P]):
             try:
-                modelo, mco, z, X = ajustar(
-                    DATA,
-                    L=L,
-                    ar=ar,
-                    hac=hac,
+                z = muestra(DATA, [a])
+                s = z[a].to_numpy()
+
+                lagmax = min(
+                    18,
+                    len(s) // 3,
                 )
 
-                c1, c2, c3 = st.columns(3)
+                acf = sm.tsa.stattools.acf(
+                    s,
+                    nlags=lagmax,
+                    fft=False,
+                )
 
-                c1.metric("N", len(z))
+                grafico(
+                    px.bar(
+                        x=np.arange(len(acf)),
+                        y=acf,
+                        labels={
+                            "x": "Rezago",
+                            "y": "ACF",
+                        },
+                        title="Autocorrelación",
+                    )
+                )
+
+            except Exception as e:
+                st.info(str(e))
+
+    with tab[2]:
+        st.latex(
+            r"B_t=\alpha+\rho B_{t-1}"
+            r"+\sum_{j=0}^L\beta_j T_{t-j}"
+            r"+\sum_{j=0}^L\gamma_j PM_{t-j}+u_t"
+        )
+
+        if necesita(DATA, [Y, T, P]):
+            c1, c2, c3 = st.columns(3)
+
+            L = c1.slider(
+                "Rezagos L", 0, 3, 2
+            )
+
+            ar = c2.checkbox(
+                "Brecha rezagada", True
+            )
+
+            h = c3.slider(
+                "Ancho HAC", 0, 8, 3
+            )
+
+            try:
+                m, o, z, X = ardl(
+                    DATA, L, ar, h
+                )
+
+                b = bloques(m, L)
+
+                c1, c2, c3, c4 = st.columns(4)
+
+                c1.metric(
+                    "Meses", len(z)
+                )
 
                 c2.metric(
                     "R² ajustado",
-                    f"{mco.rsquared_adj:.4f}",
+                    f"{o.rsquared_adj:.4f}",
                 )
 
                 c3.metric(
                     "AIC",
-                    f"{mco.aic:.4f}",
+                    f"{o.aic:.3f}",
                 )
 
-                coef = tabla_coef(modelo)
-
-                bloques = contraste_bloques(
-                    modelo,
-                    L,
+                c4.metric(
+                    "BIC",
+                    f"{o.bic:.3f}",
                 )
+
+                st.subheader(
+                    "Coeficientes e intervalos HAC"
+                )
+
+                coef = tabla_coef(m)
 
                 st.dataframe(
                     coef,
-                    hide_index=True,
                     use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.subheader(
+                    "Contrastes conjuntos"
                 )
 
                 st.dataframe(
-                    bloques,
-                    hide_index=True,
+                    b,
                     use_container_width=True,
+                    hide_index=True,
                 )
 
-                exportar(
-                    coef,
-                    "coeficientes_hac.csv",
-                )
-
-                exportar(
-                    bloques,
-                    "bloques_hac.csv",
-                )
-
-                ajuste = z[
+                fit = z[
                     ["mes", Y]
                 ].copy()
 
-                ajuste["Ajustado"] = (
-                    mco.fittedvalues.to_numpy()
+                fit["Ajuste ARDL"] = (
+                    o.fittedvalues.to_numpy()
                 )
 
-                grafico_series(
-                    ajuste,
-                    [Y, "Ajustado"],
-                    "Brecha observada y ajuste dentro de muestra",
-                )
-
-                if (L, ar, hac) == (2, True, 3):
-                    referencia = {
-                        "Coef_RNDC_t": 0.00913,
-                        "p_RNDC_t": 0.03750,
-                        "p_conjunto_RNDC": 0.14273,
-                        "p_conjunto_SIPSA": 0.23749,
-                    }
-
-                    calculados = {
-                        "Coef_RNDC_t": modelo.params["T_L0"],
-                        "p_RNDC_t": modelo.pvalues["T_L0"],
-                        "p_conjunto_RNDC": (
-                            bloques.iloc[0]["p_conjunto_HAC"]
-                        ),
-                        "p_conjunto_SIPSA": (
-                            bloques.iloc[1]["p_conjunto_HAC"]
-                        ),
-                    }
-
-                    st.caption(
-                        "Contraste con valores redondeados del artículo"
-                    )
-
-                    comparacion = pd.DataFrame([
-                        {
-                            "Control": clave,
-                            "Artículo": valor,
-                            "App": calculados[clave],
-                            "Diferencia": abs(
-                                calculados[clave] - valor
-                            ),
-                        }
-                        for clave, valor in referencia.items()
-                    ])
-
-                    st.dataframe(
-                        comparacion,
-                        hide_index=True,
-                    )
-
-                st.info(
-                    "La significancia individual no establece "
-                    "significancia de los bloques ni causalidad."
-                )
-
-            except Exception as exc:
-                st.error(str(exc))
-
-    with tabs[3]:
-        if disponibles(DATA, [Y, T, P]):
-            try:
-                _, mco, z, X = ajustar(DATA)
-
-                diag, residuos, vif = diagnosticar(
-                    mco,
-                    z,
-                    X,
-                )
-
-                st.dataframe(diag.T)
-
-                st.dataframe(
-                    vif,
-                    hide_index=True,
-                )
-
-                figura(
-                    px.scatter(
-                        residuos,
-                        x="Ajuste",
-                        y="Residuo",
-                        title="Residuos frente al ajuste",
-                    )
-                )
-
-                figura(
-                    px.bar(
-                        residuos.assign(
-                            mes=residuos["mes"].astype(str)
+                grafico(
+                    px.line(
+                        fit.assign(
+                            mes=fit.mes.astype(str)
                         ),
                         x="mes",
-                        y="Cook",
-                        title="Distancias de Cook",
+                        y=[Y, "Ajuste ARDL"],
+                        title="Ajuste del modelo dentro de muestra",
                     )
                 )
 
-                exportar(
-                    residuos,
-                    "residuos_ardl.csv",
+                ci = coef[
+                    coef.Regresor != "const"
+                ].copy()
+
+                grafico(
+                    px.scatter(
+                        ci,
+                        x="Coeficiente",
+                        y="Regresor",
+                        error_x=(
+                            ci["IC 95 % sup"]
+                            - ci["Coeficiente"]
+                        ),
+                        error_x_minus=(
+                            ci["Coeficiente"]
+                            - ci["IC 95 % inf"]
+                        ),
+                        title="Coeficientes HAC e IC 95 %",
+                    )
                 )
 
-            except Exception as exc:
-                st.error(str(exc))
+                if L == 2 and ar and h == 3:
+                    contraste = pd.DataFrame([
+                        {
+                            "Control": k,
+                            "Artículo": v,
+                            "Aplicación": w,
+                        }
+                        for k, v, w in [
+                            (
+                                "RNDC contemporáneo",
+                                ART["RNDC0"],
+                                float(m.params["T_L0"]),
+                            ),
+                            (
+                                "p RNDC contemporáneo",
+                                ART["p_RNDC0"],
+                                float(m.pvalues["T_L0"]),
+                            ),
+                            (
+                                "p RNDC conjunto",
+                                ART["p_RNDC_bloque"],
+                                float(
+                                    b.iloc[0]["p conjunta HAC"]
+                                ),
+                            ),
+                            (
+                                "p SIPSA conjunto",
+                                ART["p_SIPSA_bloque"],
+                                float(
+                                    b.iloc[1]["p conjunta HAC"]
+                                ),
+                            ),
+                        ]
+                    ])
 
-    with tabs[4]:
-        if disponibles(DATA, [Y, T, P]):
-            if st.button(
-                "Comparar 8 modelos DL/ARDL y sensibilidades"
-            ):
-                resultado = tabla_robustez(DATA)
+                    with st.expander(
+                        "Auditoría de reproducción respecto al artículo"
+                    ):
+                        st.dataframe(
+                            contraste,
+                            hide_index=True,
+                        )
+
+                        exportar(
+                            contraste,
+                            "contraste_articulo.csv",
+                        )
+
+                exportar(
+                    coef,
+                    "coeficientes_ardl.csv",
+                )
+
+            except Exception as e:
+                st.error(
+                    f"No se pudo estimar el ARDL: {e}"
+                )
+
+        else:
+            st.markdown(
+                "**Referencia publicada, no reestimación:**"
+            )
+
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "N": ART["N"],
+                        "Coef RNDC(t)": ART["RNDC0"],
+                        "p HAC RNDC(t)": ART["p_RNDC0"],
+                        "p RNDC conjunto": ART["p_RNDC_bloque"],
+                        "p SIPSA conjunto": ART["p_SIPSA_bloque"],
+                    }
+                ]),
+                hide_index=True,
+            )
+
+    with tab[3]:
+        if necesita(DATA, [Y, T, P]):
+            try:
+                _, o, z, X = ardl(DATA)
+
+                diag, res, vif = diagnosticos(
+                    o, z, X
+                )
 
                 st.dataframe(
-                    resultado,
-                    hide_index=True,
+                    diag.T,
                     use_container_width=True,
                 )
 
-                exportar(
-                    resultado,
-                    "robustez.csv",
-                )
-
-            if st.button(
-                "Comparar MCO frente a Huber"
-            ):
-                try:
-                    st.dataframe(
-                        comparar_huber(DATA),
-                        hide_index=True,
-                    )
-
-                except Exception as exc:
-                    st.error(str(exc))
-
-            if st.button(
-                "Ventanas móviles de 36 meses"
-            ):
-                try:
-                    ventanas = ventanas_moviles(DATA)
-
-                    st.dataframe(
-                        ventanas,
-                        hide_index=True,
-                    )
-
-                    exportar(
-                        ventanas,
-                        "ventanas.csv",
-                    )
-
-                except Exception as exc:
-                    st.error(str(exc))
-
-    with tabs[5]:
-        seleccion = st.multiselect(
-            "Series para PCA",
-            VARS,
-            default=VARS,
-            format_func=lambda x: NOMBRES[x],
-        )
-
-        clusters = st.slider(
-            "K clusters",
-            2,
-            6,
-            3,
-        )
-
-        if (
-            len(seleccion) >= 2
-            and st.button("Ejecutar PCA y K-Means")
-        ):
-            try:
-                coords, cargas, proporcion = pca_kmeans(
-                    DATA,
-                    seleccion,
-                    clusters,
-                )
-
-                st.write(
-                    f"Varianza explicada: "
-                    f"PC1 {proporcion[0]:.1%}; "
-                    f"PC2 {proporcion[1]:.1%}"
-                )
-
-                figura(
-                    px.scatter(
-                        coords,
-                        x="PC1",
-                        y="PC2",
-                        color="Grupo",
-                        hover_data=["mes"],
-                        title="PCA y clusters de meses",
-                    )
-                )
-
-                st.dataframe(cargas)
-
-                exportar(
-                    coords,
-                    "clusters_mensuales.csv",
-                )
-
-                st.caption(
-                    "Se agrupan meses, no departamentos. "
-                    "No se realizan imputaciones."
-                )
-
-            except Exception as exc:
-                st.error(str(exc))
-
-    with tabs[6]:
-        elegir = st.multiselect(
-            "Variables endógenas",
-            VARS,
-            default=[
-                x for x in (Y, T, P)
-                if x in VARS
-            ],
-            max_selections=3,
-            format_func=lambda x: NOMBRES[x],
-        )
-
-        lags = st.slider(
-            "Rezagos VAR",
-            1,
-            3,
-            1,
-        )
-
-        if (
-            len(elegir) >= 2
-            and st.button("Estimar VAR si es admisible")
-        ):
-            try:
-                m, irf = var_condicional(
-                    DATA,
-                    elegir,
-                    lags,
-                    6,
-                )
-
-                st.write({
-                    "AIC": m.aic,
-                    "BIC": m.bic,
-                    "Estable": m.is_stable(),
-                })
-
-                impacto = st.selectbox(
-                    "Impulso",
-                    elegir,
-                )
-
-                respuesta = st.selectbox(
-                    "Respuesta",
-                    elegir,
-                )
-
-                valores = irf[
-                    :,
-                    elegir.index(respuesta),
-                    elegir.index(impacto),
-                ]
-
-                figura(
-                    px.line(
-                        x=list(range(len(valores))),
-                        y=valores,
-                        markers=True,
-                        title="IRF reducida exploratoria",
-                    )
-                )
-
-            except Exception as exc:
-                st.info(str(exc))
-
-        if (
-            len(elegir) >= 2
-            and st.button("Revisar elegibilidad VECM/Johansen")
-        ):
-            try:
-                tabla, johansen = evaluar_vecm(
-                    DATA,
-                    elegir,
-                )
-
                 st.dataframe(
-                    tabla,
+                    vif,
+                    use_container_width=True,
                     hide_index=True,
                 )
 
-                if johansen is not None:
+                a, b = st.columns(2)
+
+                with a:
+                    grafico(
+                        px.scatter(
+                            res,
+                            x="Ajuste",
+                            y="Residuo",
+                            title="Residuo frente a ajuste",
+                        )
+                    )
+
+                with b:
+                    grafico(
+                        px.histogram(
+                            res,
+                            x="Residuo",
+                            nbins=15,
+                            title="Distribución residual",
+                        )
+                    )
+
+                grafico(
+                    px.bar(
+                        res.assign(
+                            mes=res.mes.astype(str)
+                        ),
+                        x="mes",
+                        y="Cook",
+                        title="Distancia de Cook",
+                    )
+                )
+
+                exportar(
+                    res,
+                    "diagnosticos_residuos.csv",
+                )
+
+            except Exception as e:
+                st.info(str(e))
+
+    with tab[4]:
+        if necesita(DATA, [Y, T, P]):
+            if st.button(
+                "Comparar especificaciones",
+                type="primary",
+            ):
+                t = robustez(DATA)
+
+                st.dataframe(
+                    t,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                exportar(
+                    t,
+                    "robustez.csv",
+                )
+
+                if "p RNDC/ICTC" in t:
+                    vista = t[
+                        t["Estado"] == "OK"
+                    ].copy()
+
+                    if len(vista):
+                        grafico(
+                            px.bar(
+                                vista,
+                                x="Especificación",
+                                y="p RNDC/ICTC",
+                                title="Sensibilidad del bloque de transporte",
+                            )
+                        )
+
+            a, b = st.columns(2)
+
+            with a:
+                if st.button(
+                    "MCO frente a Huber"
+                ):
+                    try:
+                        st.dataframe(
+                            huber(DATA),
+                            hide_index=True,
+                        )
+                    except Exception as e:
+                        st.error(str(e))
+
+            with b:
+                if st.button(
+                    "21 ventanas móviles (36 meses)"
+                ):
+                    try:
+                        v = ventanas(DATA)
+
+                        st.dataframe(
+                            v,
+                            hide_index=True,
+                        )
+
+                        grafico(
+                            px.line(
+                                v,
+                                x="Fin",
+                                y=[
+                                    "Suma RNDC",
+                                    "Suma SIPSA",
+                                ],
+                                title="Estabilidad de sumas puntuales",
+                            )
+                        )
+
+                        exportar(
+                            v,
+                            "ventanas.csv",
+                        )
+
+                    except Exception as e:
+                        st.error(str(e))
+
+    with tab[5]:
+        if len(VARS) >= 2:
+            elegir = st.multiselect(
+                "Series",
+                VARS,
+                default=VARS[:min(3, len(VARS))],
+                format_func=etiqueta,
+                key="pca",
+            )
+
+            k = st.slider(
+                "Número de clusters",
+                2, 6, 3,
+            )
+
+            if (
+                st.button("Ejecutar PCA + K-Means")
+                and len(elegir) >= 2
+            ):
+                try:
+                    pts, cargas, var = pca_clusters(
+                        DATA, elegir, k
+                    )
+
+                    st.metric(
+                        "Varianza explicada PC1 + PC2",
+                        f"{sum(var):.1%}",
+                    )
+
+                    grafico(
+                        px.scatter(
+                            pts,
+                            x="PC1",
+                            y="PC2",
+                            color="Grupo",
+                            hover_data=["Mes"],
+                            title="Meses agrupados por patrón",
+                        )
+                    )
+
                     st.dataframe(
-                        johansen,
-                        hide_index=True,
+                        cargas,
+                        use_container_width=True,
                     )
 
-                else:
-                    st.info(
-                        "No se justifica VECM con la evidencia "
-                        "de integración disponible."
+                    grafico(
+                        px.imshow(
+                            cargas,
+                            text_auto=".2f",
+                            title="Cargas de componentes",
+                        )
                     )
 
-            except Exception as exc:
-                st.warning(str(exc))
+                    exportar(
+                        pts,
+                        "pca_clusters.csv",
+                    )
 
-    with tabs[7]:
-        if disponibles(DATA, [Y, T, P]):
-            elegidos = st.multiselect(
-                "Modelos predictivos",
+                except Exception as e:
+                    st.info(str(e))
+
+    with tab[6]:
+        if len(VARS) >= 2:
+            elegir = st.multiselect(
+                "Variables endógenas",
+                VARS,
+                default=VARS[:min(3, len(VARS))],
+                max_selections=3,
+                format_func=etiqueta,
+                key="varvars",
+            )
+
+            lags = st.slider(
+                "Rezagos VAR",
+                1, 3, 1,
+            )
+
+            if len(elegir) >= 2:
+                c1, c2 = st.columns(2)
+
+                with c1:
+                    if st.button(
+                        "Estimar VAR e IRF"
+                    ):
+                        try:
+                            m, irf = var_exploratorio(
+                                DATA,
+                                elegir,
+                                lags,
+                                6,
+                            )
+
+                            st.write({
+                                "N": m.nobs,
+                                "AIC": m.aic,
+                                "BIC": m.bic,
+                                "Estable": m.is_stable(),
+                            })
+
+                            tmp = []
+
+                            for i, respuesta in enumerate(elegir):
+                                tmp.extend(
+                                    {
+                                        "Horizonte": h,
+                                        "Respuesta": etiqueta(respuesta),
+                                        "Valor": irf[h, i, 0],
+                                    }
+                                    for h in range(7)
+                                )
+
+                            grafico(
+                                px.line(
+                                    pd.DataFrame(tmp),
+                                    x="Horizonte",
+                                    y="Valor",
+                                    color="Respuesta",
+                                    title=(
+                                        "Respuestas a innovación en "
+                                        f"{etiqueta(elegir[0])}"
+                                    ),
+                                )
+                            )
+
+                        except Exception as e:
+                            st.info(str(e))
+
+                with c2:
+                    if st.button(
+                        "Diagnóstico Johansen / VECM"
+                    ):
+                        try:
+                            test, joh = cointegracion(
+                                DATA, elegir
+                            )
+
+                            st.dataframe(
+                                test,
+                                hide_index=True,
+                            )
+
+                            if joh is not None:
+                                st.dataframe(
+                                    joh,
+                                    hide_index=True,
+                                )
+                            else:
+                                st.info(
+                                    "Los indicadores no justifican VECM "
+                                    "bajo este diagnóstico I(1)."
+                                )
+
+                        except Exception as e:
+                            st.info(str(e))
+
+    with tab[7]:
+        if necesita(DATA, [Y, T, P]):
+            elegir = st.multiselect(
+                "Comparar algoritmos",
                 [
                     "Media histórica",
                     "AR(1)",
@@ -2655,503 +2720,588 @@ elif pagina == "📊 Análisis Pasto–Nariño":
                     "Lasso",
                     "SVR",
                 ],
+                key="mlsel",
             )
 
             if (
-                elegidos
-                and st.button("Validación cronológica y XAI")
+                st.button(
+                    "Evaluación cronológica",
+                    type="primary",
+                )
+                and elegir
             ):
                 try:
-                    resumen, pronosticos, datos, features, inicio = evaluar_ml(
-                        DATA,
-                        elegidos,
+                    met, pred, datos, cols, inicio = (
+                        ml_cronologico(
+                            DATA, elegir
+                        )
                     )
 
                     st.dataframe(
-                        resumen,
-                        hide_index=True,
+                        met,
                         use_container_width=True,
+                        hide_index=True,
                     )
 
-                    figura(
+                    grafico(
                         px.line(
-                            pronosticos,
-                            x="mes",
+                            pred,
+                            x="Mes",
                             y="Predicho",
                             color="Modelo",
-                            title="Pronósticos exploratorios",
+                            title="Predicción un mes adelante",
+                        )
+                    )
+
+                    reales = pred.drop_duplicates(
+                        "Mes"
+                    )[["Mes", "Real"]]
+
+                    grafico(
+                        px.line(
+                            reales,
+                            x="Mes",
+                            y="Real",
+                            title="Brecha realmente observada",
                         )
                     )
 
                     exportar(
-                        pronosticos,
-                        "pronosticos_ml.csv",
+                        pred,
+                        "pronosticos.csv",
                     )
 
-                    xai_models = [
-                        x for x in elegidos
-                        if x in (
+                    modelos = [
+                        x for x in elegir
+                        if x in [
                             "Ridge",
                             "Lasso",
                             "SVR",
                             "MLP",
-                        )
+                        ]
                     ]
 
-                    if xai_models:
-                        importancia = xai(
+                    if modelos:
+                        imp = xai_permutacion(
                             datos,
-                            features,
+                            cols,
                             inicio,
-                            xai_models[0],
+                            modelos[0],
                         )
 
-                        figura(
+                        st.subheader(
+                            f"Explicabilidad: {modelos[0]}"
+                        )
+
+                        grafico(
                             px.bar(
-                                importancia,
+                                imp,
                                 x="Importancia",
                                 y="Regresor",
                                 orientation="h",
-                                title=(
-                                    "XAI por permutación: "
-                                    f"{xai_models[0]}"
-                                ),
+                                title="Importancia por permutación",
                             )
                         )
 
                         exportar(
-                            importancia,
-                            "importancia_xai.csv",
+                            imp,
+                            "xai.csv",
                         )
 
-                    st.warning(
-                        "Validación seudofuera de muestra: "
-                        "el calendario histórico de publicación "
-                        "no está comprobado. No detecta bloqueos."
-                    )
+                except Exception as e:
+                    st.error(str(e))
 
-                except Exception as exc:
-                    st.error(str(exc))
+    with tab[8]:
+        if necesita(DATA, [Y, T, P]):
+            a, b, c = st.columns(3)
 
-    with tabs[8]:
-        if disponibles(DATA, [Y, T, P]):
-            variable = st.selectbox(
-                "Variable del escenario",
-                [T, P],
-                format_func=lambda x: NOMBRES[x],
-            )
+            with a:
+                variable = st.selectbox(
+                    "Indicador del escenario",
+                    [T, P],
+                    format_func=etiqueta,
+                )
 
-            cambio = st.number_input(
-                "Cambio hipotético del indicador (p. p.)",
-                value=1.0,
-                step=0.5,
-            )
+            with b:
+                shock = st.number_input(
+                    "Variación hipotética (p. p.)",
+                    value=1.0,
+                    step=0.5,
+                )
 
-            horizonte = st.slider(
-                "Meses de respuesta",
-                1,
-                12,
-                6,
-            )
+            with c:
+                hor = st.slider(
+                    "Horizonte (meses)",
+                    1, 12, 6,
+                )
 
             if st.button(
-                "Simular trayectoria condicionada"
+                "Simular",
+                type="primary",
             ):
                 try:
-                    modelo, _, _, _ = ajustar(DATA)
+                    m, _, _, _ = ardl(DATA)
 
-                    resultado = multiplicadores(
-                        modelo,
+                    t = trayectorias(
+                        m,
                         variable,
-                        cambio,
-                        horizonte,
+                        hor,
+                        shock,
                     )
 
-                    graf = go.Figure()
+                    fig = go.Figure()
 
-                    graf.add_trace(
+                    fig.add_trace(
                         go.Scatter(
-                            x=resultado["Horizonte"],
-                            y=resultado["IC95_sup"],
+                            x=t.Mes,
+                            y=t["IC sup"],
                             line=dict(width=0),
                             showlegend=False,
                         )
                     )
 
-                    graf.add_trace(
+                    fig.add_trace(
                         go.Scatter(
-                            x=resultado["Horizonte"],
-                            y=resultado["IC95_inf"],
+                            x=t.Mes,
+                            y=t["IC inf"],
                             fill="tonexty",
                             name="IC 95 %",
                         )
                     )
 
-                    graf.add_trace(
+                    fig.add_trace(
                         go.Scatter(
-                            x=resultado["Horizonte"],
-                            y=resultado["Respuesta_pp"],
+                            x=t.Mes,
+                            y=t.Respuesta,
                             mode="lines+markers",
-                            name="Respuesta",
+                            name="Respuesta condicionada",
                         )
                     )
 
-                    figura(graf)
+                    fig.add_hline(
+                        y=0,
+                        line_dash="dot",
+                    )
+
+                    grafico(fig)
+
+                    st.dataframe(
+                        t,
+                        hide_index=True,
+                    )
 
                     exportar(
-                        resultado,
-                        "simulacion_ardl.csv",
+                        t,
+                        "trayectoria.csv",
                     )
 
-                    st.caption(
-                        "Escenario condicional. No es un choque "
-                        "causalmente identificado."
-                    )
+                except Exception as e:
+                    st.error(str(e))
 
-                except Exception as exc:
-                    st.error(str(exc))
-
-    with tabs[9]:
-        st.write(
-            "En la primera quincena de mayo de 2021, "
-            "el DANE documentó una caída del abastecimiento "
-            "de El Potrerillo de 4.618 a 1.987 toneladas "
-            "(-56,98 %). La evidencia es quincenal; "
-            "las series del observatorio son mensuales."
+    with tab[9]:
+        st.subheader(
+            "Episodio de abastecimiento: abril–agosto de 2021"
         )
 
-        episodio = DATA[
+        datos = DATA[
             DATA["mes"].between(
                 pd.Period("2021-04"),
                 pd.Period("2021-08"),
             )
         ]
 
-        columnas = [
-            c for c in (Y, T, P)
-            if c in VARS
-        ]
-
-        if columnas:
+        if VARS:
             st.dataframe(
-                episodio[
-                    ["mes"] + columnas
+                datos[
+                    ["mes"] + VARS
                 ].assign(
-                    mes=lambda v: v["mes"].astype(str)
+                    mes=lambda x: x.mes.astype(str)
                 ),
                 hide_index=True,
+                use_container_width=True,
             )
 
-            grafico_series(
-                episodio,
-                columnas,
-                "Abril–agosto de 2021",
+            serie_grafico(
+                datos,
+                [VARS[0]],
+                "Dinámica durante el episodio",
             )
 
-        if disponibles(DATA, [T, P]):
+        if necesita(DATA, [T, P]):
             try:
-                senales = senales_historicas(DATA)
+                sen = semaforo(DATA)
 
                 st.dataframe(
-                    senales[
-                        senales["mes"].str.startswith("2021")
+                    sen[
+                        sen.Mes.str.startswith("2021")
                     ],
                     hide_index=True,
                 )
 
+                grafico(
+                    px.scatter(
+                        sen,
+                        x="RNDC",
+                        y="SIPSA",
+                        color="Semáforo",
+                        hover_data=["Mes"],
+                        title="Clasificación histórica por percentiles",
+                    )
+                )
+
                 exportar(
-                    senales,
-                    "semaforo_retrospectivo.csv",
+                    sen,
+                    "semaforo_retroactivo.csv",
                 )
 
-                st.warning(
-                    "Semáforo retrospectivo por percentiles. "
-                    "No es una alerta vial operativa."
-                )
+            except Exception as e:
+                st.info(str(e))
 
-            except Exception as exc:
-                st.warning(str(exc))
+        st.markdown(
+            "**Dato DANE documentado:** abastecimiento de El Potrerillo: "
+            "4.618 t (primera quincena de abril de 2021) y "
+            "1.987 t (primera quincena de mayo de 2021)."
+        )
 
 
 elif pagina == "📑 Generador de informes":
-    st.header(
-        "Informe automatizado de la investigación"
+    st.title(
+        "Generador de informes del observatorio"
     )
 
-    contenido = [
+    st.caption(
+        "Informe construido con las series efectivamente cargadas "
+        "y los modelos que puedan estimarse."
+    )
+
+    fecha = datetime.now().strftime(
+        "%Y-%m-%d %H:%M"
+    )
+
+    lineas = [
         "# Informe estadístico Pasto–Colombia",
-        f"Generado: {datetime.now():%Y-%m-%d %H:%M}",
+        f"Fecha: {fecha}",
         "",
-        "## Fuentes y cobertura",
+        "## Cobertura",
     ]
 
-    for variable in (Y, T, P, I):
-        n = (
-            int(DATA[variable].notna().sum())
-            if variable in DATA
-            else 0
+    for c in [Y, T, P, I]:
+        lineas.append(
+            f"- {etiqueta(c)}: "
+            f"{int(DATA[c].count()) if c in DATA else 0} meses"
         )
 
-        contenido.append(
-            f"- {NOMBRES[variable]}: {n} meses"
-        )
+    lineas.append(
+        "\n## Resultados mensuales disponibles"
+    )
 
-    contenido += [
-        "",
-        "## Diseño",
-        (
-            "Estudio asociativo con series mensuales "
-            "2018–2024 y muestra econométrica de "
-            "56 meses, sin imputaciones."
-        ),
-    ]
+    for c in VARS:
+        z = DATA[
+            ["mes", c]
+        ].dropna()
+
+        lineas.append(
+            f"- {etiqueta(c)}: "
+            f"media {z[c].mean():.4f}; "
+            f"mínimo {z[c].min():.4f}; "
+            f"máximo {z[c].max():.4f} "
+            f"({len(z)} meses)."
+        )
 
     if all(
-        variable in VARS
-        for variable in (Y, T, P)
+        c in DISP for c in [Y, T, P]
     ):
         try:
-            m, o, z, _ = ajustar(DATA)
+            m, o, z, _ = ardl(DATA)
+            b = bloques(m)
 
-            bloques = contraste_bloques(m)
+            lineas.extend([
+                "\n## ARDL L2, HAC(3)",
+                (
+                    f"N={len(z)}; "
+                    f"R² ajustado={o.rsquared_adj:.5f}; "
+                    f"AIC={o.aic:.5f}."
+                ),
+                (
+                    f"RNDC contemporáneo={m.params['T_L0']:.6f} "
+                    f"(p HAC={m.pvalues['T_L0']:.5f})."
+                ),
+                (
+                    f"p conjunto RNDC="
+                    f"{b.iloc[0]['p conjunta HAC']:.5f}; "
+                    f"p conjunto SIPSA="
+                    f"{b.iloc[1]['p conjunta HAC']:.5f}."
+                ),
+            ])
 
-            contenido += [
-                "",
-                "## ARDL L2 / HAC(3)",
-                (
-                    f"N = {len(z)}; "
-                    f"R² ajustado = {o.rsquared_adj:.5f}; "
-                    f"AIC = {o.aic:.5f}."
-                ),
-                (
-                    f"Coeficiente RNDC(t) = "
-                    f"{m.params['T_L0']:.6f}; "
-                    f"p HAC = {m.pvalues['T_L0']:.5f}."
-                ),
-                (
-                    f"p conjunto RNDC = "
-                    f"{bloques.iloc[0]['p_conjunto_HAC']:.5f}."
-                ),
-                (
-                    f"p conjunto SIPSA = "
-                    f"{bloques.iloc[1]['p_conjunto_HAC']:.5f}."
-                ),
-            ]
-
-        except Exception as exc:
-            contenido += [
-                "",
-                f"Modelo no estimable: {exc}",
-            ]
+        except Exception as e:
+            lineas.append(
+                f"\nARDL no estimable: {e}"
+            )
 
     else:
-        contenido += [
-            "",
-            (
-                "Modelo pendiente por ausencia de "
-                "series auténticas suficientes."
-            ),
-        ]
+        lineas.append(
+            "\nLa regresión no se recalcula sin las tres "
+            "series auténticas completas."
+        )
 
-    contenido += [
-        "",
-        "## Alcance",
+    lineas.extend([
+        "\n## Procedencia",
         (
-            "No se identifican efectos causales "
-            "ni se predicen cierres viales."
+            "DANE: IPC, SIPSA, ICTC; RNDC: Ministerio de Transporte "
+            "(índice construido por autores)."
         ),
-        "",
-        "## Fuentes",
-        f"https://github.com/{REPO_RNDC}",
-        f"https://github.com/{REPO_SIPSA}",
-    ]
+        f"https://github.com/{MAIN}",
+        f"https://github.com/{SIPSA}",
+    ])
 
-    informe = "\n\n".join(contenido)
+    texto = "\n\n".join(lineas)
 
-    st.markdown(informe)
+    st.markdown(texto)
 
     st.download_button(
-        "Descargar informe Markdown",
-        informe.encode("utf-8-sig"),
+        "⬇️ Descargar informe Markdown",
+        texto.encode("utf-8-sig"),
         file_name="informe_observatorio.md",
         mime="text/markdown",
     )
 
     exportar(
         DATA,
-        "series_observatorio.csv",
+        "base_observatorio.csv",
     )
 
 
-elif pagina == "💬 Chatbot":
-    st.header(
-        "Asistente numérico del observatorio"
-    )
+elif pagina == "💬 Asistente estadístico":
+    st.title("Asistente de consultas")
 
     st.caption(
-        "No es RAG. La integración documental "
-        "se desarrollará posteriormente."
+        "Pregunta por meses, promedios, rangos "
+        "o las variables del estudio."
     )
 
-    if "dialogo" not in st.session_state:
-        st.session_state.dialogo = []
+    if "dialogo_obs" not in st.session_state:
+        st.session_state.dialogo_obs = []
 
-    for item in st.session_state.dialogo:
-        with st.chat_message(item["rol"]):
-            st.markdown(item["texto"])
+    for item in st.session_state.dialogo_obs:
+        with st.chat_message(item["role"]):
+            st.markdown(item["content"])
 
     pregunta = st.chat_input(
-        "Pregunta por una variable, un mes AAAA-MM "
-        "o su promedio"
+        "Ej.: ¿cuánto fue RNDC en mayo de 2021?"
     )
 
     if pregunta:
-        q = normalizar(pregunta)
+        q = normal(pregunta)
 
         if any(
-            termino in q
-            for termino in (
-                "sipsa", "potrerillo", "mayorista"
-            )
+            x in q for x in [
+                "sipsa",
+                "potrerillo",
+                "mayorista",
+            ]
         ):
-            variable = P
+            c = P
 
         elif any(
-            termino in q
-            for termino in ("rndc", "flete")
+            x in q for x in [
+                "rndc",
+                "flete",
+            ]
         ):
-            variable = T
+            c = T
 
         elif "ictc" in q:
-            variable = I
+            c = I
 
         else:
-            variable = Y
+            c = Y
 
-        fecha = re.search(
+        mes = re.search(
             r"(20(?:18|19|2[0-4]))[- /](0?[1-9]|1[0-2])",
             q,
         )
 
-        if any(
-            termino in q
-            for termino in (
-                "causa", "causal", "bloqueo"
-            )
-        ):
-            respuesta = (
-                "Los modelos documentan asociaciones "
-                "y no detectan bloqueos viales."
-            )
+        meses = {
+            "enero": 1,
+            "febrero": 2,
+            "marzo": 3,
+            "abril": 4,
+            "mayo": 5,
+            "junio": 6,
+            "julio": 7,
+            "agosto": 8,
+            "septiembre": 9,
+            "octubre": 10,
+            "noviembre": 11,
+            "diciembre": 12,
+        }
 
-        elif variable not in VARS:
-            respuesta = (
-                f"{NOMBRES[variable]} no está disponible "
-                "en las series recuperadas."
-            )
-
-        elif fecha:
+        if mes:
             periodo = pd.Period(
-                f"{fecha.group(1)}-"
-                f"{int(fecha.group(2)):02d}"
-            )
-
-            fila = DATA.loc[
-                DATA["mes"] == periodo,
-                variable,
-            ]
-
-            if (
-                len(fila)
-                and pd.notna(fila.iloc[0])
-            ):
-                respuesta = (
-                    f"{NOMBRES[variable]} en {periodo}: "
-                    f"{fila.iloc[0]:.5f}."
-                )
-
-            else:
-                respuesta = (
-                    "No existe una observación auténtica "
-                    "para ese mes."
-                )
-
-        elif any(
-            termino in q
-            for termino in ("promedio", "media")
-        ):
-            respuesta = (
-                f"Promedio observado de {NOMBRES[variable]}: "
-                f"{DATA[variable].mean():.5f} "
-                f"({DATA[variable].count()} meses)."
+                f"{mes.group(1)}-{int(mes.group(2)):02d}"
             )
 
         else:
-            respuesta = (
-                "Consulta un valor mensual (AAAA-MM), "
-                "un promedio o la cobertura de una variable."
+            m2 = re.search(
+                r"(enero|febrero|marzo|abril|mayo|junio|julio|"
+                r"agosto|septiembre|octubre|noviembre|diciembre)"
+                r"\s+(?:de\s+)?(20\d{2})",
+                q,
             )
 
-        st.session_state.dialogo += [
+            periodo = (
+                pd.Period(
+                    f"{m2.group(2)}-{meses[m2.group(1)]:02d}"
+                )
+                if m2 else None
+            )
+
+        if any(
+            x in q
+            for x in [
+                "causa",
+                "bloqueo",
+                "causal",
+            ]
+        ):
+            res = (
+                "Los datos describen asociaciones observacionales. "
+                "No identifican impactos causales de bloqueos."
+            )
+
+        elif c not in DISP:
+            res = (
+                f"{etiqueta(c)} todavía no está disponible "
+                "en las fuentes recuperadas."
+            )
+
+        elif periodo is not None:
+            vals = DATA.loc[
+                DATA.mes == periodo, c
+            ]
+
+            if len(vals) and pd.notna(vals.iloc[0]):
+                res = (
+                    f"{etiqueta(c)} en {periodo}: "
+                    f"**{float(vals.iloc[0]):.5f}**."
+                )
+
+            else:
+                res = (
+                    f"No existe valor observado para "
+                    f"{etiqueta(c)} en {periodo}."
+                )
+
+        elif any(
+            x in q
+            for x in [
+                "promedio",
+                "media",
+            ]
+        ):
+            res = (
+                f"Promedio de {etiqueta(c)}: "
+                f"**{DATA[c].mean():.5f}**, basado en "
+                f"{DATA[c].count()} meses."
+            )
+
+        elif any(
+            x in q
+            for x in [
+                "maximo",
+                "minimo",
+                "pico",
+            ]
+        ):
+            z = DATA[
+                ["mes", c]
+            ].dropna()
+
+            idx = (
+                z[c].idxmin()
+                if "minimo" in q
+                else z[c].idxmax()
+            )
+
+            res = (
+                f"{etiqueta(c)}: "
+                f"{z.loc[idx, c]:.5f} "
+                f"en {z.loc[idx, 'mes']}."
+            )
+
+        else:
+            res = (
+                "Puedo consultar IPC, brecha, RNDC, SIPSA e ICTC. "
+                "Indica una variable y un mes (AAAA-MM), "
+                "o pide el promedio o máximo."
+            )
+
+        st.session_state.dialogo_obs.extend([
             {
-                "rol": "user",
-                "texto": pregunta,
+                "role": "user",
+                "content": pregunta,
             },
             {
-                "rol": "assistant",
-                "texto": respuesta,
+                "role": "assistant",
+                "content": res,
             },
-        ]
+        ])
 
         st.rerun()
 
 
 else:
-    st.header(
-        "Derechos, fuentes y créditos"
+    st.title(
+        "Fuentes, metodología y créditos"
+    )
+
+    st.markdown("""
+**Universidad de Nariño · Seminario de Investigación Regional II**
+
+**Investigación:** *Costos del transporte de carga, precios mayoristas de alimentos y brecha inflacionaria Pasto–Colombia: evidencia mensual 2018–2024.*
+
+**Autores del artículo:** Juan David Granja Miramag, Helmer Andrés Rivera Vallejos y Yeison Alexander Ortega Rosero.
+
+**Fuentes:** DANE (IPC, ICTC, SIPSA-P y SIPSA-A); Ministerio de Transporte (registros RNDC). GitHub conserva respaldos originales y productos derivados, no sustituye la autoridad estadística de las fuentes primarias.
+
+**Advertencia metodológica.** Todos los modelos son asociativos, no causales. No se imputan ni interpolan observaciones. Se distinguen 84 meses de descripción, 59 de muestra común y 56 para DL/ARDL. La brecha corresponde a la ciudad de Pasto frente al total nacional, no a todo el departamento de Nariño. El índice RNDC fue construido por los autores a partir de registros oficiales; no es un índice publicado por el Ministerio. RNDC e ICTC miden conceptos diferentes. La validación predictiva es seudofuera de muestra y el semáforo es retrospectivo, no una alerta de cierres viales.
+
+**Acerca de este observatorio.** Reproduce la estructura analítica y las restricciones metodológicas del artículo y su notebook de investigación. Los contrastes solo se muestran como reproducidos cuando se recalculan sobre insumos auténticos y pasan las verificaciones.
+
+**Próxima etapa del proyecto:** artículo final y sistema RAG documental; no forman parte de esta aplicación.
+""")
+
+    st.markdown(
+        f"**Repositorio RNDC:** https://github.com/{MAIN}"
     )
 
     st.markdown(
-        "**Investigación:** Costos del transporte de carga, "
-        "precios mayoristas de alimentos y brecha inflacionaria "
-        "Pasto–Colombia, 2018–2024."
+        f"**Respaldo SIPSA:** "
+        f"https://github.com/{SIPSA}/releases/tag/{TAG}"
     )
 
     st.markdown(
-        "**Autores del artículo:** Juan David Granja Miramag, "
-        "Helmer Andrés Rivera Vallejos y "
-        "Yeison Alexander Ortega Rosero. "
-        "Universidad de Nariño."
+        f"**Notebook:** "
+        f"https://colab.research.google.com/drive/{NB_ID}"
     )
 
-    st.markdown(
-        "**Fuentes:** DANE (IPC, SIPSA e ICTC) y "
-        "Ministerio de Transporte (RNDC). "
-        "El índice regional de fletes es una "
-        "construcción de los autores; GitHub "
-        "funciona como respaldo y repositorio "
-        "de productos procesados."
-    )
+    with st.expander(
+        "Auditoría de integridad y errores de fuentes"
+    ):
+        st.dataframe(
+            AUDITORIA,
+            hide_index=True,
+            use_container_width=True,
+        )
 
-    st.markdown(
-        f"**RNDC:** https://github.com/{REPO_RNDC}"
-    )
-
-    st.markdown(
-        f"**SIPSA:** https://github.com/{REPO_SIPSA}"
-    )
-
-    st.info(
-        "No se realizan imputaciones. No se atribuye "
-        "causalidad, no se generan alertas operativas "
-        "y todavía no se implementa RAG."
-    )
+        for e in INCIDENCIAS:
+            st.write(e)
 
 
 st.divider()
 
 st.caption(
-    "Observatorio Pasto–Nariño · "
-    "Fuentes oficiales y derivados auditables · "
-    "Evidencia mensual 2018–2024"
+    "Observatorio Pasto–Nariño · DANE + RNDC · "
+    "Investigación económica 2018–2024"
 )
