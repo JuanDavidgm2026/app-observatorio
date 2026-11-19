@@ -1,1651 +1,3157 @@
-# ============================================================
-# OBSERVATORIO ECONÓMICO Y SOCIAL · STREAMLIT · CÓDIGO MAESTRO
-# ============================================================
 
-import streamlit as st
-import pandas as pd
+from __future__ import annotations
+
+import hashlib
+import io
+import re
+import subprocess
+import sys
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-import unicodedata
-import warnings
-import re
-from concurrent.futures import ThreadPoolExecutor
-from scipy import stats
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+import statsmodels.api as sm
+import streamlit as st
 from sklearn.cluster import KMeans
-from sklearn.linear_model import Ridge, Lasso
-from sklearn.svm import SVR
-from sklearn.neural_network import MLPRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.decomposition import PCA
 from sklearn.inspection import permutation_importance
-from statsmodels.tsa.stattools import adfuller
+from sklearn.linear_model import Lasso, Ridge
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
+from statsmodels.stats.diagnostic import (
+    acorr_breusch_godfrey,
+    acorr_ljungbox,
+    breaks_cusumolsresid,
+    het_breuschpagan,
+    linear_reset,
+)
+from statsmodels.stats.outliers_influence import (
+    OLSInfluence,
+    variance_inflation_factor,
+)
+from statsmodels.stats.stattools import jarque_bera
 from statsmodels.tsa.api import VAR
+from statsmodels.tsa.stattools import adfuller, kpss
 from statsmodels.tsa.vector_ar.vecm import coint_johansen
-import libpysal
-from esda.moran import Moran, Moran_Local
-from datetime import datetime
 
-warnings.filterwarnings("ignore")
 
 st.set_page_config(
-    page_title="Observatorio Económico y Social",
-    page_icon="🇨🇴",
+    page_title="Observatorio Pasto–Nariño",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ============================================================
-# CSS PREMIUM DARK
-# ============================================================
 st.markdown("""
 <style>
 .stApp {
-    background: linear-gradient(180deg, #0B1220 0%, #0F172A 40%, #111827 100%) !important;
-    color: #F8FAFC !important;
+    background: linear-gradient(145deg,#0B1220,#111827);
+    color: #E2E8F0;
 }
 section[data-testid="stSidebar"] {
-    background-color: #0F172A !important;
-    border-right: 1px solid #1E293B;
-}
-section[data-testid="stSidebar"] * { color: #E2E8F0 !important; }
-section[data-testid="stSidebar"] h1,
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 { color: #67E8F9 !important; }
-section[data-testid="stSidebar"] label,
-section[data-testid="stSidebar"] [data-testid="stWidgetLabel"],
-section[data-testid="stSidebar"] .stCaption { color: #CBD5E1 !important; }
-section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-    background-color: #1E293B !important;
-    border: 1px solid #334155 !important;
-    color: #F8FAFC !important;
-}
-section[data-testid="stSidebar"] span[data-baseweb="tag"],
-section[data-testid="stSidebar"] [data-baseweb="tag"] {
-    background-color: #155E75 !important;
-    color: #CFFAFE !important;
-    border: 1px solid #22D3EE !important;
-}
-section[data-testid="stSidebar"] [data-baseweb="tag"] span,
-section[data-testid="stSidebar"] [data-baseweb="tag"] div { color: #CFFAFE !important; }
-section[data-testid="stSidebar"] [data-baseweb="tag"] svg { fill: #A5F3FC !important; }
-section[data-testid="stSidebar"] [data-baseweb="slider"] div[role="slider"],
-section[data-testid="stSidebar"] div[role="slider"] {
-    background-color: #22D3EE !important;
-    border-color: #22D3EE !important;
-}
-section[data-testid="stSidebar"] [data-baseweb="slider"] div[data-testid="stThumbValue"],
-section[data-testid="stSidebar"] [data-testid="stSliderThumbValue"] {
-    color: #67E8F9 !important;
-    background: #164E63 !important;
-}
-section[data-testid="stSidebar"] [data-baseweb="slider"] > div > div { background-color: #334155 !important; }
-section[data-testid="stSidebar"] [data-baseweb="slider"] > div > div > div { background: #22D3EE !important; }
-section[data-testid="stSidebar"] [data-baseweb="slider"] div[style*="background"] { background-color: #22D3EE !important; }
-
-h1, h2, h3, h4 { color: #67E8F9 !important; font-weight: 700 !important; }
-.stCaption, [data-testid="stCaption"] { color: #94A3B8 !important; }
-p, span, label, .stMarkdown, .stText { color: #E2E8F0 !important; }
-div[data-baseweb="select"] > div {
-    background-color: #1E293B !important;
-    border: 1px solid #334155 !important;
-    color: #F8FAFC !important;
-}
-.stSlider [data-baseweb="slider"] div[role="slider"] { background-color: #22D3EE !important; }
-.stButton > button {
-    background: linear-gradient(90deg, #0E7490 0%, #6D28D9 100%) !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-    box-shadow: 0 2px 10px rgba(14, 116, 144, 0.35);
-}
-.stButton > button:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 4px 16px rgba(109, 40, 217, 0.4);
-}
-button[data-baseweb="tab"] { color: #94A3B8 !important; font-weight: 600 !important; }
-button[data-baseweb="tab"][aria-selected="true"] {
-    color: #67E8F9 !important;
-    border-bottom: 3px solid #67E8F9 !important;
-}
-div[data-testid="stMetric"] {
-    background-color: #1E293B;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 12px 14px;
-}
-div[data-testid="stMetric"] label { color: #94A3B8 !important; }
-div[data-testid="stMetric"] [data-testid="stMetricValue"] { color: #F8FAFC !important; }
-.stAlert, [data-testid="stAlert"] {
-    background-color: #1E293B !important;
-    color: #F1F5F9 !important;
-    border: 1px solid #334155 !important;
-}
-[data-testid="stNotificationContentInfo"], div[data-baseweb="notification"] {
-    background-color: #164E63 !important;
-    color: #CFFAFE !important;
-    border: 1px solid #22D3EE !important;
-}
-[data-testid="stNotificationContentError"], [data-baseweb="notification"][kind="negative"] {
-    background-color: #134E4A !important;
-    border-color: #2DD4BF !important;
-    color: #CCFBF1 !important;
-}
-[data-testid="stNotificationContentWarning"], [data-baseweb="notification"][kind="warning"] {
-    background-color: #422006 !important;
-    border-color: #FBBF24 !important;
-    color: #FEF3C7 !important;
-}
-a { color: #67E8F9 !important; }
-a:hover { color: #A5F3FC !important; }
-[data-testid="stDataFrame"] { border: 1px solid #334155; border-radius: 10px; }
-hr { border-color: #334155 !important; }
-footer { visibility: hidden; }
-.intro-box {
-    background: linear-gradient(135deg, #0F172A 0%, #1E293B 55%, #1E1B4B 100%);
-    border: 1px solid #334155;
-    border-left: 5px solid #22D3EE;
-    border-radius: 16px;
-    padding: 1.35rem 1.6rem;
-    margin: 0.4rem 0 1.2rem 0;
-    box-shadow: 0 10px 28px rgba(0,0,0,0.28);
-}
-.intro-box h2 { color: #67E8F9 !important; margin: 0 0 0.55rem 0; font-size: 1.4rem; }
-.intro-box p, .intro-box li { color: #E2E8F0 !important; line-height: 1.6; margin: 0.35rem 0; }
-.intro-box .tag {
-    display: inline-block;
-    background: #155E75;
-    color: #CFFAFE !important;
-    border-radius: 999px;
-    padding: 0.2rem 0.7rem;
-    font-size: 0.8rem;
-    margin: 0.2rem 0.3rem 0.15rem 0;
-}
-.authors {
-    margin-top: 0.85rem;
-    padding-top: 0.75rem;
-    border-top: 1px solid #334155;
-    color: #CBD5E1 !important;
-    font-size: 0.95rem;
-}
-.authors b { color: #A5F3FC !important; }
-.authors .uni { display: block; margin-top: 0.35rem; color: #94A3B8 !important; font-size: 0.9rem; }
-.tip-box {
     background: #0F172A;
+    border-right: 1px solid #334155;
+}
+h1,h2,h3 {
+    color: #67E8F9 !important;
+}
+[data-testid="stMetric"] {
+    background: #1E293B;
     border: 1px solid #334155;
-    border-left: 4px solid #A78BFA;
     border-radius: 12px;
-    padding: 0.9rem 1.1rem;
-    margin-bottom: 1rem;
-    color: #CBD5E1 !important;
+    padding: 12px;
 }
-.credits-box {
-    background: linear-gradient(145deg, #0F172A 0%, #1E1B4B 100%);
+[data-testid="stDataFrame"] {
     border: 1px solid #334155;
-    border-radius: 16px;
-    padding: 2rem;
-    margin: 1rem 0;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+    border-radius: 8px;
 }
-.credits-box h2 { color: #67E8F9 !important; margin-bottom: 1rem; }
-.credits-box h3 { color: #A5F3FC !important; margin-top: 1.5rem; }
-.credits-box p, .credits-box li { color: #CBD5E1 !important; line-height: 1.65; }
-.credits-box .meta { color: #94A3B8 !important; font-size: 0.9rem; }
+.stButton > button[kind="primary"] {
+    background: linear-gradient(90deg,#0E7490,#6D28D9);
+    border: none;
+}
 </style>
 """, unsafe_allow_html=True)
 
-PLOT_LAYOUT = dict(
+STYLE = dict(
     template="plotly_dark",
     paper_bgcolor="#0B1220",
     plot_bgcolor="#111827",
-    font=dict(color="#E2E8F0", size=13),
-    title_font=dict(color="#67E8F9", size=16),
 )
 
-# ============================================================
-# UTILIDADES GENERALES
-# ============================================================
-def quitar_tildes(texto):
-    if pd.isna(texto) or texto is None:
+BASE = Path(__file__).resolve().parent
+RUNTIME = BASE / "runtime"
+
+REPO_RNDC = "JuanDavidgm2026/fletes-precios-inflacion-pasto"
+REPO_SIPSA = "JuanDavidgm2026/SIPSA-PASTO"
+TAG = "sipsa-dane-originales-v1"
+
+Y = "BRECHA_INFLACION_PASTO_COLOMBIA_PP"
+T = "VAR_FLETE_TORNQVIST_PCT"
+P = "PM_ponderado_t"
+I = "ICTC_MENSUAL_PCT"
+
+MES_84 = pd.period_range("2018-01", "2024-12", freq="M")
+MES_59 = pd.period_range("2020-02", "2024-12", freq="M")
+MES_56 = pd.period_range("2020-05", "2024-12", freq="M")
+
+NOMBRES = {
+    Y: "Brecha Pasto–Colombia (p. p.)",
+    T: "Fletes RNDC Törnqvist (%)",
+    P: "SIPSA ponderado El Potrerillo (%)",
+    I: "ICTC nacional (%)",
+    "PM_no_ponderado_t": "SIPSA no ponderado (%)",
+    "PM_ponderado_lagQ_t": "SIPSA pesos rezagados (%)",
+    "PM_100": "SIPSA canasta completa (%)",
+    "PM_95": "SIPSA canasta 95 % (%)",
+    "VAR_FLETE_FISHER_PCT": "Fletes RNDC Fisher (%)",
+    "VAR_FLETE_CRUDO_PCT": "Fletes RNDC sin filtro (%)",
+    "VAR_FLETE_SIN_2000_PCT": "Fletes RNDC sin 2.000 (%)",
+    "IPC_MENSUAL_PASTO_PCT": "Inflación mensual Pasto (%)",
+    "IPC_MENSUAL_NACIONAL_PCT": "Inflación mensual nacional (%)",
+    "cobertura_indice_pct": "Cobertura SIPSA (%)",
+    "n_productos_indice": "Productos SIPSA emparejados",
+}
+
+HASHES = {
+    "RNDC": (
+        "aaec180a88d32bbccbfb13b94be4784c9e9b4c6f23d9a93b7475b1acd1bd3891"
+    ),
+    "IPC": (
+        "3e584414f3f89c78f99ce92576a0715d3d51fac5d6dcd75addf84065e4cd4076"
+    ),
+    "ICTC": (
+        "6fe232548e47dbf9801b75c620209f579ebd0faa2a46fc30a9a305453878205a"
+    ),
+}
+
+URLS = {
+    "RNDC": [
+        f"https://raw.githubusercontent.com/{REPO_RNDC}/main/data/"
+        "variable2_flete_regional_modelo_2020_2024.csv"
+    ],
+    "IPC": [
+        "https://www.dane.gov.co/files/operaciones/IPC/"
+        "dic2024/anex-IPC-CiudadesMensuales-dic2024.xlsx",
+        f"https://github.com/{REPO_SIPSA}/releases/download/"
+        f"{TAG}/anex-IPC-CiudadesMensuales-dic2024.xlsx",
+    ],
+    "ICTC": [
+        "https://www.dane.gov.co/files/operaciones/ICTC/"
+        "anex-ICTC-HistVariaContrib-dic2024.xlsx",
+        f"https://github.com/{REPO_SIPSA}/releases/download/"
+        f"{TAG}/anex-ICTC-HistVariaContrib-dic2024.xlsx",
+    ],
+}
+
+NOTEBOOK_ID = "1Tu3ZzP1L8XlUejqbS_0eXgZ8QszqiMr7"
+
+SIPSA_CELDA_SHA = (
+    "be21823d6980f6b0f092fd58ff808fa6056c0a550f01606ec9fb1d85276da98f"
+)
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def descargar(url, timeout=75):
+    respuesta = requests.get(
+        url,
+        timeout=timeout,
+        headers={"User-Agent": "Observatorio-Pasto/2.1"},
+    )
+    respuesta.raise_for_status()
+    return respuesta.content
+
+
+def verificar_descarga(nombre):
+    errores = []
+
+    for url in URLS[nombre]:
+        try:
+            raw = descargar(url)
+
+            if sha(raw) != HASHES[nombre]:
+                raise ValueError(
+                    "SHA-256 distinto del registrado en el Colab"
+                )
+
+            return raw, url
+
+        except Exception as exc:
+            errores.append(f"{url}: {str(exc)[:100]}")
+
+    raise RuntimeError(" | ".join(errores))
+
+
+def normalizar(valor):
+    if pd.isna(valor):
         return ""
-    t = str(texto).strip().lower()
-    t = "".join(c for c in unicodedata.normalize("NFD", t) if unicodedata.category(c) != "Mn")
-    return t.replace(",", "").replace(".", " ").replace("  ", " ").strip()
 
-DEPARTAMENTOS_CANONICOS = {
-    "amazonas": "Amazonas", "antioquia": "Antioquia", "arauca": "Arauca",
-    "atlantico": "Atlántico", "bogota": "Bogotá D.C.", "bogota d c": "Bogotá D.C.",
-    "bogota dc": "Bogotá D.C.", "bogota, d c": "Bogotá D.C.",
-    "bolivar": "Bolívar", "boyaca": "Boyacá", "caldas": "Caldas", "caqueta": "Caquetá",
-    "casanare": "Casanare", "cauca": "Cauca", "cesar": "Cesar", "choco": "Chocó",
-    "cordoba": "Córdoba", "cundinamarca": "Cundinamarca", "guainia": "Guainía",
-    "guaviare": "Guaviare", "huila": "Huila", "la guajira": "La Guajira",
-    "magdalena": "Magdalena", "meta": "Meta", "narino": "Nariño",
-    "norte de santander": "Norte de Santander", "putumayo": "Putumayo",
-    "quindio": "Quindío", "risaralda": "Risaralda",
-    "san andres": "San Andrés y Providencia",
-    "san andres y providencia": "San Andrés y Providencia",
-    "archipielago de san andres": "San Andrés y Providencia",
-    "santander": "Santander", "sucre": "Sucre", "tolima": "Tolima",
-    "valle": "Valle del Cauca", "valle del cauca": "Valle del Cauca",
-    "vaupes": "Vaupés", "vichada": "Vichada",
-}
+    texto = unicodedata.normalize(
+        "NFKD",
+        str(valor).strip().lower(),
+    )
 
-# Lista oficial de los 33 territorios que se aceptan
-TERRITORIOS_OFICIALES = set(DEPARTAMENTOS_CANONICOS.values())
+    texto = "".join(
+        c for c in texto
+        if not unicodedata.combining(c)
+    )
 
-DEPT_ALIASES = {
-    "antioquia": "Antioquia", "antoquia": "Antioquia", "antioqia": "Antioquia",
-    "narino": "Nariño", "nariño": "Nariño", "nariñio": "Nariño",
-    "bogota": "Bogotá D.C.", "bogotá": "Bogotá D.C.", "bogota dc": "Bogotá D.C.",
-    "valle": "Valle del Cauca", "valle del cauca": "Valle del Cauca",
-    "santander": "Santander", "norte de santander": "Norte de Santander",
-    "atlantico": "Atlántico", "bolivar": "Bolívar", "boyaca": "Boyacá",
-    "cordoba": "Córdoba", "caqueta": "Caquetá", "choco": "Chocó",
-    "guajira": "La Guajira", "la guajira": "La Guajira",
-    "meta": "Meta", "tolima": "Tolima", "huila": "Huila", "cauca": "Cauca",
-    "cesar": "Cesar", "magdalena": "Magdalena", "sucre": "Sucre",
-    "risaralda": "Risaralda", "caldas": "Caldas", "quindio": "Quindío",
-    "putumayo": "Putumayo", "casanare": "Casanare", "arauca": "Arauca",
-}
+    return " ".join(texto.split())
 
-def normalizar_departamento(nombre):
-    if pd.isna(nombre):
-        return None
-    canon = DEPARTAMENTOS_CANONICOS.get(quitar_tildes(nombre), str(nombre).strip().title())
-    # Solo aceptar territorios oficiales
-    if canon in TERRITORIOS_OFICIALES:
-        return canon
-    # Intentar coincidencia parcial para nombres largos de San Andrés
-    if "san andres" in quitar_tildes(nombre) or "archipielago" in quitar_tildes(nombre):
-        return "San Andrés y Providencia"
-    return None  # Se descarta
 
-def _match_geo_name(depto):
-    mapa = {
-        "Bogotá D.C.": "Bogotá, D.C.",
-        "Bogotá": "Bogotá, D.C.",
-        "San Andrés y Providencia": "Archipiélago de San Andrés, Providencia y Santa Catalina",
-    }
-    return mapa.get(depto, depto)
+def numero(v):
+    if pd.isna(v):
+        return np.nan
 
-def _fetch(url, limit=100000, timeout=70):
-    try:
-        r = requests.get(f"{url}?$limit={limit}", timeout=timeout)
-        r.raise_for_status()
-        data = r.json()
-        return pd.DataFrame(data) if data else pd.DataFrame()
-    except Exception as e:
-        print(f"  Error fetch: {e}")
-        return pd.DataFrame()
+    if isinstance(v, (float, int, np.number)):
+        return float(v)
 
-# ============================================================
-# CARGA DE DATOS DEPARTAMENTALES (solo oficiales + limpieza)
-# ============================================================
-def cargar_pib():
-    df = _fetch("https://www.datos.gov.co/resource/kgyi-qc7j.json", 80000)
-    if df.empty:
-        return pd.DataFrame()
-    try:
-        df["anio"] = pd.to_numeric(df.get("a_o"), errors="coerce")
-        df["valor"] = pd.to_numeric(df.get("valor_miles_de_millones_de"), errors="coerce")
-        df["departamento"] = df["departamento"].apply(normalizar_departamento)
-        if "tipo_de_precios" in df.columns:
-            df = df[df["tipo_de_precios"].astype(str).str.contains("constantes", case=False, na=False)]
-        # Limpieza de años
-        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-        agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
-        agg = agg[agg["departamento"].notna()]
-        agg["indicador"] = "PIB"
-        return agg
-    except Exception:
-        return pd.DataFrame()
+    valor = str(v).strip().replace("%", "").replace(",", ".")
 
-def cargar_homicidios():
-    df = _fetch("https://www.datos.gov.co/resource/m8fd-ahd9.json", 150000)
-    if df.empty:
-        return pd.DataFrame()
-    try:
-        df["fecha"] = pd.to_datetime(df.get("fecha_hecho"), errors="coerce")
-        df["anio"] = df["fecha"].dt.year
-        df["departamento"] = df["departamento"].apply(normalizar_departamento)
-        df["cantidad"] = pd.to_numeric(df.get("cantidad"), errors="coerce").fillna(1)
-        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-        agg = (df.groupby(["departamento", "anio"], as_index=False)["cantidad"]
-               .sum().rename(columns={"cantidad": "valor"}).dropna())
-        agg = agg[agg["departamento"].notna()]
-        agg["indicador"] = "Homicidios"
-        return agg
-    except Exception:
-        return pd.DataFrame()
+    return float(
+        pd.to_numeric(valor, errors="coerce")
+    )
 
-def cargar_dnp():
-    df = _fetch("https://www.datos.gov.co/resource/wc86-9j4a.json", 100000)
-    if df.empty:
-        return pd.DataFrame()
-    try:
-        df["departamento"] = df["departamento"].apply(normalizar_departamento)
-        df["anio"] = pd.to_numeric(df.get("vigencia"), errors="coerce")
-        col = next((c for c in ["valorpagado", "valorobligado", "valorcomprometido"] if c in df.columns), None)
-        if not col:
-            return pd.DataFrame()
-        df["valor"] = pd.to_numeric(df[col], errors="coerce")
-        # Limpieza estricta de años (DNP trae proyecciones futuras)
-        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-        agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
-        agg = agg[agg["departamento"].notna()]
-        agg["indicador"] = "Recursos_DNP"
-        return agg
-    except Exception:
-        return pd.DataFrame()
 
-def cargar_educacion():
-    df = _fetch("https://www.datos.gov.co/resource/ji8i-4anb.json", 5000)
-    if df.empty:
-        return pd.DataFrame()
-    try:
-        col_anio = next((c for c in ["ano", "a_o", "anio", "year"] if c in df.columns), None)
-        col_dep = next((c for c in ["departamento", "nombre_departamento"] if c in df.columns), None)
-        if not col_anio or not col_dep:
-            return pd.DataFrame()
-        df["anio"] = pd.to_numeric(df[col_anio], errors="coerce")
-        df["departamento"] = df[col_dep].apply(normalizar_departamento)
-        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-        records = []
-        for api_col, nombre in [
-            ("cobertura_neta", "Cobertura_Neta_Educacion"),
-            ("tasa_matriculacion_5_16", "Tasa_Matriculacion_5_16"),
-            ("cobertura_bruta", "Cobertura_Bruta_Educacion"),
-        ]:
-            if api_col in df.columns:
-                t = df[["departamento", "anio", api_col]].copy()
-                t["valor"] = pd.to_numeric(t[api_col], errors="coerce")
-                t = t.dropna(subset=["departamento", "anio", "valor"])
-                if len(t) and t["valor"].max() <= 1.5:
-                    t["valor"] = t["valor"] * 100
-                t["indicador"] = nombre
-                records.append(t[["departamento", "anio", "valor", "indicador"]])
-        if not records:
-            return pd.DataFrame()
-        return pd.concat(records, ignore_index=True)
-    except Exception:
-        return pd.DataFrame()
+def fechas_mensuales(serie):
+    if isinstance(serie.dtype, pd.PeriodDtype):
+        return serie.dt.asfreq("M")
 
-def cargar_matricula_superior():
-    df = _fetch("https://www.datos.gov.co/resource/4hrb-y62g.json", 5000)
-    if df.empty:
-        return pd.DataFrame()
-    try:
-        col_anio = next((c for c in ["a_o", "ano", "anio"] if c in df.columns), None)
-        col_dep = next((c for c in ["nombre_del_departamento", "departamento", "nombre_departamento"] if c in df.columns), None)
-        if not col_anio or not col_dep:
-            return pd.DataFrame()
-        df["anio"] = pd.to_numeric(df[col_anio], errors="coerce")
-        df["departamento"] = df[col_dep].apply(normalizar_departamento)
-        df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-        niveles = [c for c in ["tecnica_profesional", "tecnologica", "universitaria",
-                               "especializacion", "maestria", "doctorado"] if c in df.columns]
-        if niveles:
-            for c in niveles:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-            df["valor"] = df[niveles].sum(axis=1)
-        else:
-            nums = [c for c in df.select_dtypes(include=[np.number]).columns if c not in ["anio"]]
-            if not nums:
-                return pd.DataFrame()
-            df["valor"] = pd.to_numeric(df[nums[0]], errors="coerce")
-        agg = df.groupby(["departamento", "anio"], as_index=False)["valor"].sum().dropna()
-        agg = agg[agg["departamento"].notna()]
-        agg["indicador"] = "Matricula_Superior"
-        return agg
-    except Exception:
-        return pd.DataFrame()
+    texto = serie.astype("string").str.strip()
 
-@st.cache_data(ttl=3600, show_spinner="Cargando datos oficiales…")
-def cargar_todo():
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        partes = [f.result() for f in [
-            ex.submit(cargar_pib),
-            ex.submit(cargar_homicidios),
-            ex.submit(cargar_dnp),
-            ex.submit(cargar_educacion),
-            ex.submit(cargar_matricula_superior),
-        ]]
-    partes = [p for p in partes if p is not None and not p.empty]
-    if not partes:
-        raise RuntimeError("No se cargó ningún indicador oficial.")
-    df = pd.concat(partes, ignore_index=True)
-    df["anio"] = pd.to_numeric(df["anio"], errors="coerce")
-    # Limpieza final de años y departamentos
-    df = df[(df["anio"] >= 2005) & (df["anio"] <= 2025)]
-    df = df.dropna(subset=["departamento", "anio", "valor"])
-    df = df[df["departamento"].isin(TERRITORIOS_OFICIALES)]
-    df["anio"] = df["anio"].astype(int)
-    return df.reset_index(drop=True)
+    if texto.dropna().str.fullmatch(r"\d{6}").all():
+        return pd.to_datetime(
+            texto,
+            format="%Y%m",
+            errors="coerce",
+        ).dt.to_period("M")
 
-@st.cache_data(ttl=3600)
-def cargar_geojson():
-    try:
-        return requests.get(
-            "https://raw.githubusercontent.com/caticoa3/colombia_mapa/master/co_2018_MGN_DPTO_POLITICO.geojson",
-            timeout=25
-        ).json()
-    except Exception:
-        return None
+    return pd.to_datetime(
+        serie,
+        errors="coerce",
+    ).dt.to_period("M")
 
-def crear_panel_ancho(df):
-    return df.pivot_table(index=["departamento", "anio"], columns="indicador",
-                          values="valor", aggfunc="sum").reset_index()
 
-def filtrar(df, deptos=None, inds=None, a1=None, a2=None):
+def auditar_meses(df, meses, columnas):
+    if df["mes"].tolist() != list(meses):
+        raise ValueError(
+            f"Calendario incompleto o duplicado: "
+            f"{meses[0]} a {meses[-1]}"
+        )
+
+    valores = df[columnas].to_numpy(float)
+
+    if not np.isfinite(valores).all():
+        raise ValueError(
+            "Valores no observados o no finitos. No se imputan."
+        )
+
+
+def normalizar_base(df, nombre):
     d = df.copy()
-    if deptos and "Todos" not in deptos:
-        d = d[d["departamento"].isin(deptos)]
-    if inds:
-        d = d[d["indicador"].isin(inds)]
-    if a1 is not None:
-        d = d[d["anio"] >= a1]
-    if a2 is not None:
-        d = d[d["anio"] <= a2]
-    return d
 
-def mejor_anio(df_long, ind, anio_pref):
-    d = df_long[df_long["indicador"] == ind]
-    if d.empty:
-        return None
-    if (d["anio"] == anio_pref).any():
-        return anio_pref
-    return int(d["anio"].max())
+    d.columns = [
+        str(c).replace("\ufeff", "").strip()
+        for c in d.columns
+    ]
 
-def lags_seguros(nobs, neqs, solicitado=2):
-    if nobs <= neqs + 2:
-        return 1
-    safe = max(1, (nobs - neqs - 1) // max(neqs, 1))
-    return max(1, min(int(solicitado), safe, 3))
-
-def style_fig(fig):
-    if fig is not None:
-        fig.update_layout(**PLOT_LAYOUT)
-    return fig
-
-def _es_educacion(nombre):
-    n = str(nombre)
-    return ("Educacion" in n) or ("Matricula" in n) or ("Matriculacion" in n)
-
-# ============================================================
-# MÓDULOS ANALÍTICOS
-# ============================================================
-def eda(DF_LONG, PANEL, lista_inds, deptos, inds, a1, a2):
-    d = filtrar(DF_LONG, deptos, inds or lista_inds, a1, a2)
-    info = ""
-    if d.empty:
-        d = filtrar(DF_LONG, deptos, inds or lista_inds, None, None)
-        if d.empty:
-            return "Sin datos para esa combinación. Prueba ampliar años o Todos en departamentos.", None
-        info = f"*(Rango ampliado: {int(d.anio.min())}-{int(d.anio.max())})*\n\n"
-    rows = []
-    for ind, g in d.groupby("indicador"):
-        s = g["valor"].dropna()
-        if len(s) < 3:
-            continue
-        jb, p = stats.jarque_bera(s)
-        rows.append({
-            "Indicador": ind, "N": len(s),
-            "Media": round(float(s.mean()), 2), "Mediana": round(float(s.median()), 2),
-            "Desv.Std": round(float(s.std()), 2),
-            "Asimetría": round(float(s.skew()), 3), "Curtosis": round(float(s.kurtosis()), 3),
-            "Jarque-Bera p": round(float(p), 4),
-            "Años": f"{int(g.anio.min())}-{int(g.anio.max())}"
-        })
-    if not rows:
-        return "Pocos datos para estadísticos.", None
-    res = pd.DataFrame(rows)
-    panel = crear_panel_ancho(d)
-    cols = [c for c in panel.columns if c not in ["departamento", "anio"]]
-    fig = None
-    if len(cols) >= 2:
-        fig = px.imshow(panel[cols].corr(), text_auto=".2f", color_continuous_scale="RdBu_r",
-                        title="Correlación (datos oficiales)", aspect="auto")
-        fig = style_fig(fig)
-        fig.update_layout(height=420)
-    return info + res.to_markdown(index=False), fig
-
-def pca_fn(PANEL, a1, a2):
-    p = PANEL[(PANEL["anio"] >= a1) & (PANEL["anio"] <= a2)].copy()
-    cols = [c for c in p.columns if c not in ["departamento", "anio"]]
-    if len(cols) < 2:
-        return "Se necesitan ≥2 indicadores.", None
-    X = p[cols].dropna(thresh=2).fillna(p[cols].mean())
-    if len(X) < 6:
-        X = PANEL[cols].dropna(thresh=2).fillna(PANEL[cols].mean())
-        if len(X) < 6:
-            return "Datos insuficientes para PCA.", None
-    Xs = StandardScaler().fit_transform(X)
-    pca = PCA(n_components=2)
-    comps = pca.fit_transform(Xs)
-    var = pca.explained_variance_ratio_
-    p_clean = PANEL.loc[X.index].copy()
-    p_clean["PC1"], p_clean["PC2"] = comps[:, 0], comps[:, 1]
-    p_clean["es_narino"] = p_clean["departamento"] == "Nariño"
-    texto = f"**PCA** PC1={var[0]*100:.1f}% · PC2={var[1]*100:.1f}% · Acum={sum(var)*100:.1f}%"
-    fig = go.Figure()
-    mask = ~p_clean["es_narino"]
-    fig.add_trace(go.Scatter(
-        x=p_clean.loc[mask, "PC1"], y=p_clean.loc[mask, "PC2"], mode="markers",
-        marker=dict(size=7, color="#64748B", opacity=0.7), name="Otros",
-        text=p_clean.loc[mask, "departamento"]
-    ))
-    if p_clean["es_narino"].any():
-        fig.add_trace(go.Scatter(
-            x=p_clean.loc[p_clean["es_narino"], "PC1"],
-            y=p_clean.loc[p_clean["es_narino"], "PC2"],
-            mode="markers+text", marker=dict(size=14, color="#22D3EE", symbol="star"),
-            name="Nariño", text=["Nariño"] * int(p_clean["es_narino"].sum()),
-            textposition="top center"
-        ))
-    loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-    for i, col in enumerate(cols):
-        fig.add_trace(go.Scatter(
-            x=[0, loadings[i, 0] * 2.2], y=[0, loadings[i, 1] * 2.2],
-            mode="lines+text", text=["", col], textposition="top center",
-            line=dict(color="#A78BFA", width=2), showlegend=False
-        ))
-    fig.update_layout(
-        title="Biplot PCA – Nariño destacado",
-        xaxis_title=f"PC1 ({var[0]*100:.1f}%)",
-        yaxis_title=f"PC2 ({var[1]*100:.1f}%)",
-        height=500
+    fecha = next(
+        (
+            c for c in [
+                "mes", "FECHA", "fecha",
+                "PERIODO", "periodo"
+            ]
+            if c in d
+        ),
+        None,
     )
-    return texto, style_fig(fig)
 
-def kmeans_fn(PANEL, a1, a2, k):
-    p = PANEL[(PANEL["anio"] >= a1) & (PANEL["anio"] <= a2)]
-    cols = [c for c in p.columns if c not in ["departamento", "anio"]]
-    if len(cols) < 2:
-        return "≥2 indicadores requeridos.", None
-    agg = p.groupby("departamento")[cols].mean().dropna(thresh=2).fillna(p[cols].mean())
-    if len(agg) < int(k):
-        return f"Solo {len(agg)} departamentos. Reduce K.", None
-    Xs = StandardScaler().fit_transform(agg)
-    labels = KMeans(n_clusters=int(k), random_state=42, n_init=10).fit_predict(Xs)
-    agg = agg.copy()
-    agg["Cluster"] = labels
-    agg = agg.reset_index()
-    agg["size"] = np.where(agg["departamento"] == "Nariño", 22, 10)
-    xcol, ycol = cols[0], cols[1] if len(cols) > 1 else cols[0]
-    fig = px.scatter(
-        agg, x=xcol, y=ycol, color="Cluster", size="size",
-        hover_name="departamento", title=f"K-Means k={k}", color_continuous_scale="Viridis"
-    )
-    fig.update_layout(height=470)
-    fig = style_fig(fig)
-    cl = agg.loc[agg["departamento"] == "Nariño", "Cluster"].values
-    return f"K-Means k={k}. Nariño → Cluster {cl[0] if len(cl) else 'N/D'}", fig
-
-def mapa_fn(DF_LONG, GEOJSON, ind, anio):
-    anio_use = mejor_anio(DF_LONG, ind, int(anio))
-    if anio_use is None:
-        fig = go.Figure()
-        fig.add_annotation(text=f"Sin datos de {ind}", xref="paper", yref="paper",
-                           x=0.5, y=0.5, showarrow=False, font=dict(color="#F1F5F9", size=14))
-        return style_fig(fig)
-    d = DF_LONG[(DF_LONG["indicador"] == ind) & (DF_LONG["anio"] == anio_use)].copy()
-    d = d.dropna(subset=["valor", "departamento"])
-    if d.empty:
-        fig = go.Figure()
-        fig.add_annotation(text="Sin filas", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        return style_fig(fig)
-    nota = f" (ajustado desde {anio})" if anio_use != int(anio) else ""
-    if GEOJSON is not None:
-        try:
-            d = d.copy()
-            d["geo_name"] = d["departamento"].apply(_match_geo_name)
-            props = []
-            for ft in GEOJSON.get("features", []):
-                p = ft.get("properties", {})
-                for key in ("DPTO_CNMBR", "NOMBRE_DPT", "nombre", "name"):
-                    if key in p and p[key]:
-                        props.append(str(p[key]))
-                        break
-            props_set = set(props)
-            matched = d["geo_name"].isin(props_set).sum()
-            if matched < max(5, len(d) // 3):
-                def norm_geo(s):
-                    return quitar_tildes(s).title()
-                props_norm = {norm_geo(p): p for p in props}
-                d["geo_name"] = d["departamento"].apply(
-                    lambda x: props_norm.get(norm_geo(_match_geo_name(x)), _match_geo_name(x))
-                )
-                matched = d["geo_name"].isin(props_set).sum()
-            if matched >= 5 and d["valor"].nunique() > 1:
-                fig = px.choropleth(
-                    d, geojson=GEOJSON, locations="geo_name",
-                    featureidkey="properties.DPTO_CNMBR", color="valor",
-                    color_continuous_scale="Viridis",
-                    title=f"{ind} · {anio_use}{nota}"
-                )
-                fig.update_geos(fitbounds="locations", visible=False, bgcolor="#0B1220")
-                fig.update_layout(height=580, margin=dict(r=0, t=50, l=0, b=0))
-                return style_fig(fig)
-        except Exception as e:
-            print("Mapa error:", e)
-    d2 = d.sort_values("valor", ascending=True)
-    fig = px.bar(
-        d2, x="valor", y="departamento", orientation="h",
-        title=f"{ind} · {anio_use}{nota} [barras]",
-        color="valor", color_continuous_scale="Viridis"
-    )
-    fig.update_layout(height=max(420, 16 * len(d2)))
-    return style_fig(fig)
-
-def moran_fn(DF_LONG, ind, anio):
-    anio_use = mejor_anio(DF_LONG, ind, int(anio))
-    if anio_use is None:
-        return "Sin datos de ese indicador.", None
-    d = DF_LONG[(DF_LONG["indicador"] == ind) & (DF_LONG["anio"] == anio_use)].copy()
-    d = d.dropna(subset=["valor", "departamento"])
-    if len(d) < 8:
-        return f"Pocas observaciones ({len(d)}) para Moran.", None
-    try:
-        d = d.set_index("departamento")
-        y = d["valor"].values.astype(float)
-        n = len(y)
-        side = int(np.ceil(np.sqrt(n)))
-        w = libpysal.weights.lat2W(side, side)
-        w = libpysal.weights.WSP(w.sparse[:n, :n]).to_W()
-        w.transform = "r"
-        mi = Moran(y, w)
-        lisa = Moran_Local(y, w)
-        y_std = (y - y.mean()) / (y.std() if y.std() > 0 else 1)
-        lag = np.asarray(w.sparse @ y_std).flatten()
-        quad = lisa.q
-        labels_q = {1: "HH (hotspot)", 2: "LH", 3: "LL (coldspot)", 4: "HL"}
-        colors_q = {1: "#F87171", 2: "#FBBF24", 3: "#60A5FA", 4: "#C084FC"}
-        nombres = list(d.index)
-        fig = go.Figure()
-        for q in [1, 2, 3, 4]:
-            mask = (quad == q)
-            if not mask.any():
-                continue
-            fig.add_trace(go.Scatter(
-                x=y_std[mask], y=lag[mask], mode="markers+text",
-                text=[nombres[i] if nombres[i] == "Nariño" else "" for i in range(n) if mask[i]],
-                textposition="top center",
-                marker=dict(size=11, color=colors_q[q], opacity=0.9),
-                name=labels_q[q]
-            ))
-        fig.add_hline(y=0, line_dash="dot", line_color="#64748B")
-        fig.add_vline(x=0, line_dash="dot", line_color="#64748B")
-        fig.update_layout(
-            title=f"Diagrama de Moran / LISA – {ind} ({anio_use})",
-            xaxis_title="Valor estandarizado", yaxis_title="Rezago espacial",
-            height=480, legend=dict(orientation="h", y=1.08)
+    if fecha is None:
+        raise ValueError(
+            f"{nombre}: falta columna temporal reconocible"
         )
-        nota = f" (año ajustado a {anio_use})" if anio_use != int(anio) else ""
-        sig = (lisa.p_sim < 0.05).sum()
-        texto = (
-            f"**Moran Global – {ind} {anio_use}**{nota}\n\n"
-            f"- I = **{mi.I:.4f}** | p-sim = **{mi.p_sim:.4f}** → "
-            f"{'**significativa**' if mi.p_sim < 0.05 else 'no significativa'}\n\n"
-            f"**LISA**: {sig}/{n} con p<0.05 · "
-            f"HH={(quad==1).sum()} LL={(quad==3).sum()} LH={(quad==2).sum()} HL={(quad==4).sum()}"
+
+    d["mes"] = fechas_mensuales(d[fecha])
+
+    d = d[
+        d["mes"].isin(MES_84)
+    ].sort_values("mes")
+
+    if d["mes"].duplicated().any():
+        raise ValueError(
+            f"{nombre}: hay meses duplicados"
         )
-        return texto, style_fig(fig)
-    except Exception as e:
-        return f"Error Moran/LISA: {e}", None
 
-def var_fn(DF_LONG, depto, inds, lags, tipo):
-    d = DF_LONG[DF_LONG["departamento"] == depto]
-    if d.empty:
-        return f"Sin datos para {depto}.", None
-    panel = d.pivot_table(index="anio", columns="indicador", values="valor", aggfunc="sum")
-    cols = [c for c in (inds or list(panel.columns)) if c in panel.columns]
-    panel = panel[cols]
-    good = [c for c in panel.columns if panel[c].notna().sum() >= 6]
-    if len(good) < 2:
-        disp = d.groupby("indicador")["anio"].agg(["min", "max", "count"])
-        return (f"{depto}: se necesitan ≥2 indicadores con ≥6 años.\n\n{disp.to_markdown()}"), None
-    panel = panel[good].interpolate(limit_direction="both").dropna()
-    nobs, neqs = panel.shape
-    if nobs < 6:
-        return f"Solo {nobs} años útiles en {depto}.", None
-    adf_rows = []
-    for c in panel.columns:
-        try:
-            r = adfuller(panel[c], autolag="AIC")
-            adf_rows.append({
-                "Variable": c, "ADF": round(r[0], 3), "p": round(r[1], 4),
-                "Estacionaria": "Sí" if r[1] < 0.05 else "No"
-            })
-        except Exception:
-            pass
-    texto = f"**ADF – {depto}**\n\n" + pd.DataFrame(adf_rows).to_markdown(index=False) + "\n\n"
-    max_safe = lags_seguros(nobs, neqs, lags)
-    try:
-        if tipo == "VAR":
-            model = VAR(panel)
-            res = model.fit(maxlags=max_safe, ic="aic")
-            texto += f"**VAR** · lags={res.k_ar} (máx seguro={max_safe}) · vars: {list(panel.columns)}\n\n"
-            irf = res.irf(periods=5)
-            fig = go.Figure()
-            for i, col in enumerate(panel.columns):
-                fig.add_trace(go.Scatter(y=irf.irfs[:, i, 0], mode="lines+markers", name=f"Resp. {col}"))
-            fig.update_layout(title=f"IRF 5 periodos – {depto}", height=440)
-            return texto, style_fig(fig)
-        else:
-            k_ar = max(1, min(max_safe - 1, 2)) if max_safe > 1 else 1
-            while k_ar > 1 and nobs <= neqs * (k_ar + 1) + 2:
-                k_ar -= 1
-            joh = coint_johansen(panel, det_order=0, k_ar_diff=k_ar)
-            rank = int((joh.lr1 > joh.cvt[:, 1]).sum())
-            texto += (
-                f"**VECM / Johansen** · k_ar_diff={k_ar} · nobs={nobs} · eqs={neqs}\n\n"
-                f"Trazas: `{np.round(joh.lr1, 2)}`\n"
-                f"Críticos 95%: `{np.round(joh.cvt[:, 1], 2)}`\n"
-                f"Rango cointegración (95%): **{rank}**\n\n"
-            )
-            fig = go.Figure()
-            for c in panel.columns:
-                s = panel[c]
-                s_norm = (s - s.mean()) / (s.std() if s.std() > 0 else 1)
-                fig.add_trace(go.Scatter(x=panel.index, y=s_norm, mode="lines+markers", name=c))
-            fig.update_layout(
-                title=f"Series estandarizadas – {depto} (contexto VECM)",
-                height=440, yaxis_title="Z-score"
-            )
-            return texto, style_fig(fig)
-    except Exception as e:
-        fig = go.Figure()
-        for c in panel.columns:
-            fig.add_trace(go.Scatter(x=panel.index, y=panel[c], mode="lines+markers", name=c))
-        fig.update_layout(title=f"Series – {depto}", height=420)
-        return texto + f"\nError: `{e}`", style_fig(fig)
+    columnas = [
+        c for c in NOMBRES
+        if c in d
+    ]
 
-def ml_fn(PANEL, target, preds, a1, a2, ar, al):
-    p = PANEL[(PANEL["anio"] >= a1) & (PANEL["anio"] <= a2)].copy()
-    cols = [c for c in p.columns if c not in ["departamento", "anio"]]
-    if target not in cols:
-        return f"Target '{target}' no disponible. {cols}", None
-    features = [c for c in (preds or cols) if c in cols and c != target] or [c for c in cols if c != target]
-    if not features:
-        return "No hay predictores.", None
-    data = p[[target] + features].dropna(subset=[target])
-    data[features] = data[features].fillna(data[features].mean())
-    data = data.dropna()
-    if len(data) < 15:
-        data = PANEL[[target] + features].dropna(subset=[target])
-        data[features] = data[features].fillna(data[features].mean()).dropna()
-        if len(data) < 15:
-            return f"Solo {len(data)} filas para ML.", None
-    X, y = data[features], data[target]
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, random_state=42)
-    modelos = {
-        "Ridge": Ridge(alpha=float(ar)),
-        "Lasso": Lasso(alpha=float(al), max_iter=10000),
-        "SVR": SVR(kernel="rbf", C=10),
-        "MLP": MLPRegressor(hidden_layer_sizes=(48, 24), max_iter=400, random_state=42),
-    }
-    rows, store = [], {}
-    for nom, mod in modelos.items():
-        try:
-            mod.fit(Xtr, ytr)
-            yp = mod.predict(Xte)
-            rows.append({
-                "Modelo": nom, "R²": round(r2_score(yte, yp), 3),
-                "RMSE": round(float(np.sqrt(mean_squared_error(yte, yp))), 2),
-                "MAE": round(float(mean_absolute_error(yte, yp)), 2)
-            })
-            store[nom] = (yte, yp)
-        except Exception:
-            continue
-    if not rows:
-        return "Ningún modelo entrenó.", None
-    res = pd.DataFrame(rows)
-    mejor = res.loc[res["R²"].idxmax(), "Modelo"]
-    yt, yh = store[mejor]
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=yt, y=yh, mode="markers", name="Pred",
-                             marker=dict(color="#22D3EE", size=9, opacity=0.85)))
-    fig.add_trace(go.Scatter(
-        x=[float(yt.min()), float(yt.max())], y=[float(yt.min()), float(yt.max())],
-        mode="lines", name="Ideal", line=dict(dash="dash", color="#A78BFA", width=2)
-    ))
-    fig.update_layout(title=f"Mejor: {mejor}", height=430)
-    return res.to_markdown(index=False), style_fig(fig)
+    if not columnas:
+        raise ValueError(
+            f"{nombre}: ninguna columna del estudio identificada"
+        )
 
-def xai_fn(PANEL, target, preds, a1, a2):
-    p = PANEL[(PANEL["anio"] >= a1) & (PANEL["anio"] <= a2)].copy()
-    cols = [c for c in p.columns if c not in ["departamento", "anio"]]
-    if target not in cols:
-        return f"Target no disponible. {cols}", None
-    features = [c for c in (preds or cols) if c in cols and c != target] or [c for c in cols if c != target]
-    data = p[[target] + features].dropna(subset=[target])
-    data[features] = data[features].fillna(data[features].mean()).dropna()
-    if len(data) < 12:
-        data = PANEL[[target] + features].dropna(subset=[target])
-        data[features] = data[features].fillna(data[features].mean()).dropna()
-    if len(data) < 12:
-        return f"Solo {len(data)} filas para XAI.", None
-    X, y = data[features], data[target]
-    modelo = Ridge(alpha=1.0).fit(X, y)
-    r = permutation_importance(modelo, X, y, n_repeats=10, random_state=42)
-    imp = pd.DataFrame({
-        "Variable": features, "Importancia": r.importances_mean, "Std": r.importances_std
-    }).sort_values("Importancia", ascending=False)
-    fig = px.bar(imp, x="Importancia", y="Variable", orientation="h",
-                 title="XAI – Importancia (datos oficiales)", color="Importancia",
-                 color_continuous_scale="Viridis")
-    fig.update_layout(height=400)
-    return imp.to_markdown(index=False), style_fig(fig)
+    for c in columnas:
+        d[c] = pd.to_numeric(
+            d[c],
+            errors="coerce",
+        )
 
-def sim_fn(DF_LONG, depto, ind_s, ind_r, shock, anios):
-    d = DF_LONG[DF_LONG["departamento"] == depto]
-    if d.empty:
-        return f"Sin datos para **{depto}**.", None
-    panel = d.pivot_table(index="anio", columns="indicador", values="valor", aggfunc="sum")
-    cov = panel.notna().sum().sort_values(ascending=False)
-    disp = d.groupby("indicador")["anio"].agg(["min", "max", "count"])
-    min_s = 5 if _es_educacion(ind_s) else 6
-    min_r = 5 if _es_educacion(ind_r) else 6
+        d.loc[
+            ~np.isfinite(d[c]), c
+        ] = np.nan
 
-    def n_ok(col, min_n):
-        return col in panel.columns and int(panel[col].notna().sum()) >= min_n
+    return d[
+        ["mes"] + columnas
+    ].reset_index(drop=True)
 
-    if not n_ok(ind_s, min_s) or not n_ok(ind_r, min_r):
-        return (
-            f"No se puede simular **{ind_s} → {ind_r}** en **{depto}**.\n\n"
-            f"Se necesitan al menos **{min_s}** años en el indicador del shock y "
-            f"**{min_r}** en el de respuesta.\n\n"
-            f"**Años disponibles en {depto}:**\n\n{disp.to_markdown()}\n\n"
-            f"**Sugerencia:** usa pares con más historia (p. ej. Recursos_DNP → PIB)."
-        ), None
 
-    cols_use = [ind_s, ind_r]
-    extras = [c for c in cov.index if c not in cols_use and cov[c] >= 5][:1]
-    cols_use = cols_use + extras
-    sub = panel[cols_use].copy()
-    sub = sub.interpolate(limit_direction="both", limit=2).dropna()
-    nobs, neqs = sub.shape
-    if nobs < 5:
-        return (
-            f"Tras alinear **{ind_s}** y **{ind_r}** en **{depto}** quedan solo "
-            f"**{nobs}** años comunes.\n\n{disp.to_markdown()}"
-        ), None
+def leer_tabla(raw, nombre):
+    if nombre.lower().endswith(".parquet"):
+        return pd.read_parquet(io.BytesIO(raw))
 
-    max_safe = lags_seguros(nobs, neqs, solicitado=2)
-    try:
-        model = VAR(sub)
-        try:
-            res = model.fit(maxlags=max_safe, ic="aic")
-        except Exception:
-            res = model.fit(maxlags=1)
-        base = res.forecast(sub.values[-res.k_ar:], steps=int(anios))
-        last = sub.values[-res.k_ar:].copy()
-        idx_s = list(sub.columns).index(ind_s)
-        last[-1, idx_s] *= (1 + float(shock) / 100.0)
-        shock_f = res.forecast(last, steps=int(anios))
-        idx_r = list(sub.columns).index(ind_r)
-        anios_f = list(range(int(sub.index.max()) + 1, int(sub.index.max()) + int(anios) + 1))
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=sub.index, y=sub[ind_r], mode="lines+markers", name="Histórico",
-            line=dict(color="#94A3B8", width=2)
-        ))
-        fig.add_trace(go.Scatter(
-            x=anios_f, y=base[:, idx_r], mode="lines", name="Proyección base",
-            line=dict(dash="dash", color="#22D3EE", width=2)
-        ))
-        fig.add_trace(go.Scatter(
-            x=anios_f, y=shock_f[:, idx_r], mode="lines", name=f"Shock {shock:+.0f}%",
-            line=dict(color="#A78BFA", width=3)
-        ))
-        fig.update_layout(title=f"Simulación – impacto en {ind_r} ({depto})", height=460)
-        return (
-            f"Shock **{shock:+.0f}%** en **{ind_s}** → respuesta de **{ind_r}** "
-            f"a {anios} años (VAR, lags={res.k_ar}, nobs={nobs}, eqs={neqs})."
-        ), style_fig(fig)
-    except Exception as e:
-        return f"Error en simulación: {e}", None
-
-def focus_territorial(DF_LONG, lista_inds, depto_sel):
-    nar = DF_LONG[DF_LONG["departamento"] == depto_sel]
-    if nar.empty:
-        return f"No hay filas de **{depto_sel}**.", None
-    rows = []
-    for ind in lista_inds:
-        g = nar[nar["indicador"] == ind]
-        if g.empty:
-            rows.append({"Indicador": ind, "Último año": "—", "Valor": "—", "Δ YoY %": "—", "Prom.Nacional": "—"})
-            continue
-        ult = int(g["anio"].max())
-        val = float(g.loc[g["anio"] == ult, "valor"].iloc[0])
-        prev = g[g["anio"] == ult - 1]["valor"]
-        delta = ((val - float(prev.iloc[0])) / float(prev.iloc[0]) * 100) if len(prev) and float(prev.iloc[0]) != 0 else None
-        nac = DF_LONG[(DF_LONG["indicador"] == ind) & (DF_LONG["anio"] == ult)]["valor"].mean()
-        rows.append({
-            "Indicador": ind, "Último año": ult, "Valor": round(val, 1),
-            "Δ YoY %": round(delta, 1) if delta is not None else "N/D",
-            "Prom.Nacional": round(float(nac), 1) if pd.notna(nac) else "—"
-        })
-    res = pd.DataFrame(rows)
-    counts = nar.groupby("indicador")["anio"].nunique().sort_values(ascending=False)
-    ind0 = counts.index[0]
-    nar_t = nar[nar["indicador"] == ind0].groupby("anio")["valor"].mean().reset_index()
-    nac_t = DF_LONG[DF_LONG["indicador"] == ind0].groupby("anio")["valor"].mean().reset_index()
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=nar_t["anio"], y=nar_t["valor"], mode="lines+markers",
-                             name=depto_sel, line=dict(color="#22D3EE", width=3)))
-    fig.add_trace(go.Scatter(x=nac_t["anio"], y=nac_t["valor"], mode="lines+markers",
-                             name="Nacional", line=dict(color="#A78BFA", width=2, dash="dash")))
-    fig.update_layout(title=f"{ind0}: {depto_sel} vs Nacional", height=420)
-    return res.to_markdown(index=False), style_fig(fig)
-
-# ============================================================
-# CHATBOT
-# ============================================================
-def chatbot_respuesta(pregunta, DF_LONG, lista_inds, lista_deptos):
-    q = pregunta.lower().strip()
-    q_norm = quitar_tildes(q)
-    respuesta = []
-
-    def get_serie(depto, ind):
-        d = DF_LONG[(DF_LONG["departamento"] == depto) & (DF_LONG["indicador"] == ind)]
-        return d.sort_values("anio") if not d.empty else pd.DataFrame()
-
-    def valor_anio(serie, anio):
-        if serie.empty:
-            return None, None
-        row = serie[serie["anio"] == anio]
-        if not row.empty:
-            return float(row["valor"].iloc[0]), int(anio)
-        disponibles = serie["anio"].values
-        if len(disponibles) == 0:
-            return None, None
-        closest = min(disponibles, key=lambda x: abs(x - anio))
-        val = float(serie.loc[serie["anio"] == closest, "valor"].iloc[0])
-        return val, int(closest)
-
-    def extrair_anio(texto):
-        m = re.search(r"\b(20[0-2][0-9])\b", texto)
-        return int(m.group(1)) if m else None
-
-    def detectar_depto(texto):
-        texto_n = quitar_tildes(texto)
-        for alias, canon in DEPT_ALIASES.items():
-            if alias in texto_n:
-                return canon
-        for dep in lista_deptos:
-            if quitar_tildes(dep) in texto_n or texto_n in quitar_tildes(dep):
-                return dep
-        return None
-
-    anio_solicitado = extrair_anio(q)
-    depto_detectado = detectar_depto(q)
-
-    if depto_detectado is None:
-        if any(x in q_norm for x in ["narino", "nariño"]):
-            depto_detectado = "Nariño"
-
-    if any(k in q_norm for k in ["homicidio", "homicidios", "violencia", "seguridad", "asesinato"]):
-        depto = depto_detectado or "Nariño"
-        serie = get_serie(depto, "Homicidios")
-        if serie.empty:
-            respuesta.append(f"No hay datos de homicidios para **{depto}**.")
-        else:
-            if anio_solicitado:
-                val, anio_usado = valor_anio(serie, anio_solicitado)
-                nota = f" (dato más cercano disponible)" if anio_usado != anio_solicitado else ""
-                if val is not None:
-                    respuesta.append(f"**Homicidios en {depto} – {anio_usado}**{nota}: **{int(val)}** casos.")
-            else:
-                ultimos = serie.tail(4)
-                lineas = [f"- **{int(r['anio'])}**: {int(r['valor'])} casos" for _, r in ultimos.iterrows()]
-                respuesta.append(f"**Homicidios en {depto}** (últimos años):\n" + "\n".join(lineas))
-
-    if any(k in q_norm for k in ["pib", "producto interno", "economia", "crecimiento"]):
-        depto = depto_detectado or "Nariño"
-        serie = get_serie(depto, "PIB")
-        if serie.empty:
-            respuesta.append(f"No hay datos de PIB para **{depto}**.")
-        else:
-            if anio_solicitado:
-                val, anio_usado = valor_anio(serie, anio_solicitado)
-                nota = f" (dato más cercano disponible)" if anio_usado != anio_solicitado else ""
-                if val is not None:
-                    respuesta.append(f"**PIB de {depto} en {anio_usado}**{nota}: **{val:,.1f}** miles de millones de COP.")
-            else:
-                ult = serie.iloc[-1]
-                respuesta.append(
-                    f"**PIB de {depto}** (último año **{int(ult['anio'])}**): "
-                    f"**{ult['valor']:,.1f}** miles de millones de COP."
+    for codificacion in ("utf-8-sig", "latin-1"):
+        for separador in (",", ";"):
+            try:
+                d = pd.read_csv(
+                    io.BytesIO(raw),
+                    encoding=codificacion,
+                    sep=separador,
                 )
 
-    if any(k in q_norm for k in ["dnp", "inversion", "recursos", "presupuesto", "transferencias"]):
-        depto = depto_detectado or "Nariño"
-        serie = get_serie(depto, "Recursos_DNP")
-        if serie.empty:
-            respuesta.append(f"Sin datos de Recursos DNP para **{depto}**.")
-        else:
-            ult = serie.iloc[-1]
-            respuesta.append(
-                f"**Recursos DNP en {depto}** (último año **{int(ult['anio'])}**): "
-                f"**{ult['valor']:,.0f}**."
+                if d.shape[1] >= 2:
+                    return d
+
+            except Exception:
+                pass
+
+    raise ValueError(
+        f"Formato no reconocido: {nombre}"
+    )
+
+
+def calcular_ipc(raw):
+    hoja = pd.read_excel(
+        io.BytesIO(raw),
+        sheet_name="VarCiudades",
+        header=None,
+    )
+
+    bloques = []
+
+    for fila, valor in enumerate(hoja.iloc[:, 0]):
+        m = re.search(
+            r"variaciones mensuales\s+(20\d{2})",
+            normalizar(valor),
+        )
+
+        if m:
+            bloques.append(
+                (int(m.group(1)), fila)
             )
 
-    if any(k in q_norm for k in ["educacion", "cobertura", "matricula", "escolar"]):
-        depto = depto_detectado or "Nariño"
-        eds = [i for i in lista_inds if any(x in i for x in ["Educacion", "Matricula", "Matriculacion"])]
-        if eds:
-            partes = []
-            for ind in eds:
-                serie = get_serie(depto, ind)
-                if serie.empty:
-                    continue
-                ult = serie.iloc[-1]
-                partes.append(f"- **{ind}** ({int(ult['anio'])}): **{ult['valor']:.1f}**")
-            if partes:
-                respuesta.append(f"**Indicadores educativos de {depto}:**\n" + "\n".join(partes))
+    if [
+        x[0] for x in bloques
+    ] != list(range(2017, 2025)):
+        raise ValueError(
+            "IPC: bloques anuales diferentes del Colab"
+        )
 
-    if any(k in q_norm for k in ["comparar", "ranking", "posicion", "mejor", "peor", "nacional"]):
-        ind = "PIB"
-        for posible in lista_inds:
-            if quitar_tildes(posible).replace("_", " ") in q_norm or posible.lower() in q_norm:
-                ind = posible
-                break
-        anio_r = anio_solicitado or int(DF_LONG[DF_LONG["indicador"] == ind]["anio"].max())
-        d_rank = DF_LONG[(DF_LONG["indicador"] == ind) & (DF_LONG["anio"] == anio_r)]
-        if not d_rank.empty:
-            rank = d_rank.sort_values("valor", ascending=False).reset_index(drop=True)
-            top5 = rank.head(5)
-            lineas = [f"{i+1}. **{r['departamento']}**: {r['valor']:,.1f}" for i, r in top5.iterrows()]
-            respuesta.append(f"**Ranking {ind} – {anio_r} (Top 5)**:\n" + "\n".join(lineas))
+    meses = (
+        "enero febrero marzo abril mayo junio julio agosto "
+        "septiembre octubre noviembre diciembre"
+    ).split()
 
-    if not respuesta:
-        if any(k in q_norm for k in ["hola", "ayuda", "que puedes", "ejemplos"]):
-            respuesta.append(
-                "Soy el **asistente del Observatorio**. Puedo consultar:\n\n"
-                "- **PIB** de cualquier departamento\n"
-                "- **Homicidios**\n"
-                "- **Recursos DNP**\n"
-                "- **Educación** (cobertura y matrícula)\n"
-                "- Rankings nacionales\n\n"
-                "Ejemplos: *PIB de Nariño 2022*, *Homicidios Antioquia 2020*, *Ranking PIB 2023*"
-            )
-        else:
-            respuesta.append(
-                "No encontré coincidencia clara. Prueba:\n"
-                "- *PIB de Nariño 2022*\n"
-                "- *Homicidios Antioquia 2020*\n"
-                "- *Recursos DNP Nariño*\n"
-                "- *Ranking PIB 2023*"
+    filas = []
+
+    for k, (anio, inicio) in enumerate(bloques):
+        encabezados = [
+            normalizar(hoja.iat[inicio + 1, c])
+            for c in range(1, 13)
+        ]
+
+        if encabezados != meses:
+            raise ValueError(
+                f"IPC: encabezados incorrectos en {anio}"
             )
 
-    return "\n\n".join(respuesta)
+        fin = (
+            bloques[k + 1][1]
+            if k + 1 < len(bloques)
+            else len(hoja)
+        )
 
-# ============================================================
-# CARGA PRINCIPAL
-# ============================================================
-try:
-    DF_LONG = cargar_todo()
-except Exception as e:
-    st.error(f"Error cargando datos oficiales: {e}")
-    st.stop()
+        pasto = [
+            j for j in range(inicio + 2, fin)
+            if normalizar(hoja.iat[j, 0]) == "pasto"
+        ]
 
-GEOJSON = cargar_geojson()
-PANEL = crear_panel_ancho(DF_LONG)
+        nacional = [
+            j for j in range(inicio + 2, fin)
+            if normalizar(hoja.iat[j, 0]) == "total ipc"
+        ]
 
-lista_inds = sorted(DF_LONG["indicador"].unique().tolist())
-lista_deptos = sorted(DF_LONG["departamento"].unique().tolist())
-amin, amax = int(DF_LONG["anio"].min()), int(DF_LONG["anio"].max())
-anios_count = DF_LONG.groupby("anio")["indicador"].nunique().sort_values(ascending=False)
-anio_default = int(anios_count.index[0])
-anios_ok = anios_count[anios_count >= 2].index
-a1_def = int(min(anios_ok)) if len(anios_ok) else max(amin, 2015)
-a2_def = int(max(anios_ok)) if len(anios_ok) else amax
+        if len(pasto) != 1 or len(nacional) != 1:
+            raise ValueError(
+                f"IPC: filas Pasto/Nacional ambiguas en {anio}"
+            )
 
-# ============================================================
-# SIDEBAR
-# ============================================================
-with st.sidebar:
-    st.header("🇨🇴 Observatorio")
-    seccion = st.radio(
-        "Navegación principal",
+        for mes in range(1, 13):
+            if anio >= 2018:
+                p = numero(
+                    hoja.iat[pasto[0], mes]
+                )
+                n = numero(
+                    hoja.iat[nacional[0], mes]
+                )
+
+                filas.append({
+                    "mes": pd.Period(
+                        f"{anio}-{mes:02d}"
+                    ),
+                    "IPC_MENSUAL_PASTO_PCT": p,
+                    "IPC_MENSUAL_NACIONAL_PCT": n,
+                    Y: p - n,
+                })
+
+    resultado = pd.DataFrame(filas)
+
+    auditar_meses(
+        resultado,
+        MES_84,
         [
-            "🏠 Inicio",
-            "📊 Análisis Departamental",
-            "📑 Generador de Informes",
-            "💬 Chatbot del Observatorio",
-            "©️ Derechos y Créditos",
+            Y,
+            "IPC_MENSUAL_PASTO_PCT",
+            "IPC_MENSUAL_NACIONAL_PCT",
         ],
-        index=0,
-    )
-    st.markdown("---")
-    st.header("🎛️ Panel de control")
-    st.caption("Filtros globales")
-    depto = st.multiselect(
-        "Departamento(s)",
-        ["Todos"] + lista_deptos,
-        default=["Nariño"] if "Nariño" in lista_deptos else ["Todos"],
-    )
-    inds = st.multiselect("Indicadores", lista_inds, default=lista_inds)
-    a1 = st.slider("Año inicial", amin, amax, a1_def, 1)
-    a2 = st.slider("Año final", amin, amax, a2_def, 1)
-    anio_m = st.slider("Año mapa / Moran", amin, amax, anio_default, 1)
-    st.markdown("---")
-    st.subheader("Parámetros de modelos")
-    k = st.slider("K clusters (K-Means)", 2, 6, 3, 1)
-    ar = st.slider("Alpha Ridge", 0.01, 30.0, 1.0, 0.1)
-    al = st.slider("Alpha Lasso", 0.001, 3.0, 0.1, 0.01)
-    lags = st.slider("Lags VAR", 1, 4, 2, 1)
-    shock = st.slider("Shock % (simulación)", -40, 40, 10, 1)
-    anios_s = st.slider("Años de proyección", 3, 8, 5, 1)
-    st.markdown("---")
-    st.caption("Desarrolladores: Jeison Ortega · Juan David Granja · Helmer Rivera · Francisco Quiroz")
-    st.caption("Universidad de Nariño")
-
-# ============================================================
-# CONTENIDO
-# ============================================================
-
-if seccion == "🏠 Inicio":
-    st.markdown(
-        """
-        <h1 style="color:#67E8F9; margin-bottom:0.15rem;">
-            🇨🇴 Observatorio Económico y Social
-        </h1>
-        <p style="color:#94A3B8; margin-top:0;">
-            Datos oficiales · Enfoque departamental (todos los departamentos) · Prioridad Nariño
-        </p>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"""
-        <div class="intro-box">
-            <h2>👋 Bienvenida / Bienvenido</h2>
-            <p>
-                Esta plataforma reúne <b>indicadores oficiales de Colombia</b> provenientes de 
-                <b>datos.gov.co</b> para los <b>32 departamentos + Bogotá D.C.</b> 
-                (33 entidades territoriales).
-                Explora economía y sociedad a nivel departamental, estima modelos de series de tiempo, 
-                entrena algoritmos de aprendizaje y simula escenarios de política.
-            </p>
-            <p><b>¿Cómo empezar?</b></p>
-            <ol>
-                <li>Usa el menú de la barra lateral para navegar entre módulos.</li>
-                <li>Ajusta departamento, indicadores y rango de años cuando sea necesario.</li>
-                <li>En <b>Análisis Departamental</b> encontrarás EDA, mapas, VAR, ML y Focus Territorial.</li>
-                <li>Genera <b>Informes</b> o pregunta al <b>Chatbot</b>.</li>
-            </ol>
-            <p>
-                <span class="tag">Periodo: {amin}–{amax}</span>
-                <span class="tag">{len(lista_inds)} indicadores oficiales</span>
-                <span class="tag">{len(lista_deptos)} entidades territoriales</span>
-            </p>
-            <div class="authors">
-                <b>Desarrolladores:</b>
-                Jeison Ortega · Juan David Granja · Helmer Rivera · Francisco Quiroz
-                <span class="uni">Universidad de Nariño</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.expander("📘 Guía rápida de módulos", expanded=False):
-        st.markdown("""
-| Módulo | Para qué sirve |
-|--------|----------------|
-| **Análisis Departamental** | EDA, PCA, Clustering, mapas, Moran/LISA, VAR/VECM, ML/XAI, Simulador y Focus Territorial |
-| **Generador de Informes** | Resumen ejecutivo, evolución, comparación y exportación con interpretación automática |
-| **Chatbot** | Preguntas en lenguaje natural sobre PIB, seguridad, inversión y rankings |
-| **Derechos y Créditos** | Licencias, fuentes y autoría institucional |
-        """)
-    with st.expander("📦 Fuentes e indicadores cargados", expanded=False):
-        st.markdown(f"""
-**Origen:** APIs SODA de [datos.gov.co](https://www.datos.gov.co) (datos oficiales del Gobierno de Colombia).
-
-**Indicadores disponibles:** `{', '.join(lista_inds)}`
-
-**Territorios:** 32 departamentos + Bogotá D.C.
-        """)
-        cov = DF_LONG.groupby("indicador").agg(
-            Filas=("valor", "count"),
-            Año_mín=("anio", "min"),
-            Año_máx=("anio", "max"),
-            Departamentos=("departamento", "nunique"),
-        ).reset_index()
-        st.dataframe(cov, use_container_width=True, hide_index=True)
-
-elif seccion == "📊 Análisis Departamental":
-    st.markdown("## 📊 Análisis Departamental")
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 EDA · PCA · Clustering",
-        "🗺️ Econometría Espacial",
-        "📈 Series de Tiempo (VAR/VEC)",
-        "🤖 ML · Deep Learning & XAI",
-        "🎯 Simulador de Política",
-        "📍 Focus Territorial",
-    ])
-
-    with tab1:
-        st.markdown(
-            """<div class="tip-box">📚 <b>EDA:</b> resume la forma de los datos.
-            <b>PCA:</b> reduce dimensiones. <b>K-Means:</b> agrupa departamentos similares.</div>""",
-            unsafe_allow_html=True,
-        )
-        c1, c2, c3 = st.columns(3)
-        run_eda = c1.button("EDA + Correlación", type="primary", key="b1")
-        run_pca = c2.button("PCA + Biplot", type="primary", key="b2")
-        run_km = c3.button("K-Means", type="primary", key="b3")
-        if run_eda:
-            with st.spinner("Calculando estadísticos y correlaciones…"):
-                txt, fig = eda(DF_LONG, PANEL, lista_inds, depto, inds, a1, a2)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-        if run_pca:
-            with st.spinner("Ejecutando PCA…"):
-                txt, fig = pca_fn(PANEL, a1, a2)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-        if run_km:
-            with st.spinner("Agrupando departamentos…"):
-                txt, fig = kmeans_fn(PANEL, a1, a2, k)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab2:
-        st.markdown(
-            """<div class="tip-box">🗺️ <b>Mapa:</b> compara departamentos.
-            <b>Moran / LISA:</b> mide concentración geográfica de valores altos o bajos.</div>""",
-            unsafe_allow_html=True,
-        )
-        ind_m = st.selectbox("Indicador espacial", lista_inds, index=0, key="ind_m")
-        c1, c2 = st.columns(2)
-        run_mapa = c1.button("Mapa / Barras", type="primary", key="bm")
-        run_moran = c2.button("Moran + LISA", type="primary", key="bmor")
-        if run_mapa:
-            with st.spinner("Generando mapa…"):
-                fig = mapa_fn(DF_LONG, GEOJSON, ind_m, anio_m)
-            st.plotly_chart(fig, use_container_width=True)
-        if run_moran:
-            with st.spinner("Estimando autocorrelación espacial…"):
-                txt, fig = moran_fn(DF_LONG, ind_m, anio_m)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab3:
-        st.markdown(
-            """<div class="tip-box">📈 <b>VAR</b> modela varias series e impulso-respuesta.
-            <b>VECM</b> cuando hay cointegración. <b>ADF</b> prueba estacionariedad.</div>""",
-            unsafe_allow_html=True,
-        )
-        d_ts = st.selectbox(
-            "Departamento", lista_deptos,
-            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0, key="d_ts"
-        )
-        i_ts = st.multiselect(
-            "Indicadores VAR/VECM", lista_inds,
-            default=lista_inds[:min(3, len(lista_inds))], key="i_ts"
-        )
-        tipo = st.radio("Modelo", ["VAR", "VECM"], horizontal=True, key="tipo")
-        if st.button("Estimar modelo", type="primary", key="bts"):
-            with st.spinner(f"Estimando {tipo}…"):
-                txt, fig = var_fn(DF_LONG, d_ts, i_ts, lags, tipo)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab4:
-        st.markdown(
-            """<div class="tip-box">🤖 <b>Ridge / Lasso</b>, <b>SVR</b> y <b>MLP</b> para predicción.
-            <b>XAI</b> ordena qué variables importan más.</div>""",
-            unsafe_allow_html=True,
-        )
-        tgt = st.selectbox(
-            "Variable objetivo (target)", lista_inds,
-            index=lista_inds.index("PIB") if "PIB" in lista_inds else 0, key="tgt"
-        )
-        prd = st.multiselect(
-            "Predictores", lista_inds,
-            default=[i for i in lista_inds if i != tgt][:4], key="prd"
-        )
-        c1, c2 = st.columns(2)
-        run_ml = c1.button("Entrenar ML", type="primary", key="bml")
-        run_xai = c2.button("XAI", type="primary", key="bx")
-        if run_ml:
-            with st.spinner("Entrenando modelos…"):
-                txt, fig = ml_fn(PANEL, tgt, prd, a1, a2, ar, al)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-        if run_xai:
-            with st.spinner("Calculando importancia…"):
-                txt, fig = xai_fn(PANEL, tgt, prd, a1, a2)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab5:
-        st.markdown(
-            """<div class="tip-box">🎯 <b>Simulación:</b> shock en un indicador y trayectoria de otro.</div>""",
-            unsafe_allow_html=True,
-        )
-        ds = st.selectbox(
-            "Departamento", lista_deptos,
-            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0, key="ds"
-        )
-        is_ = st.selectbox(
-            "Indicador del shock", lista_inds,
-            index=lista_inds.index("Recursos_DNP") if "Recursos_DNP" in lista_inds else 0, key="is_"
-        )
-        ir = st.selectbox(
-            "Indicador de respuesta", lista_inds,
-            index=lista_inds.index("PIB") if "PIB" in lista_inds else 0, key="ir"
-        )
-        st.info(f"Escenario: shock de **{shock:+d}%** en **{is_}** → efecto sobre **{ir}** en **{ds}** ({anios_s} años).")
-        if st.button("Simular", type="primary", key="bs"):
-            with st.spinner("Proyectando escenario…"):
-                txt, fig = sim_fn(DF_LONG, ds, is_, ir, shock, anios_s)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-    with tab6:
-        st.markdown(
-            """<div class="tip-box">📍 <b>Focus Territorial:</b> último valor, variación interanual
-            y comparación con el promedio nacional para el departamento que elijas.</div>""",
-            unsafe_allow_html=True,
-        )
-        depto_focus = st.selectbox(
-            "Departamento a enfocar",
-            lista_deptos,
-            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
-            key="depto_focus"
-        )
-        if st.button("Actualizar dashboard territorial", type="primary", key="bn"):
-            with st.spinner(f"Construyendo tablero de {depto_focus}…"):
-                txt, fig = focus_territorial(DF_LONG, lista_inds, depto_focus)
-            st.markdown(txt)
-            if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
-
-elif seccion == "📑 Generador de Informes":
-    st.markdown("## 📑 Generador de Informes de Política")
-    st.markdown(
-        """
-        <div class="tip-box">
-        El informe se genera <b>automáticamente</b> con una interpretación sustancial basada en los datos oficiales disponibles.
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
-    tab_r1, tab_r2, tab_r3, tab_r4 = st.tabs([
-        "1. Resumen Ejecutivo",
-        "2. Evolución Temporal",
-        "3. Análisis Comparativo",
-        "4. Exportación",
-    ])
+    ultimo = resultado.iloc[-1]
 
-    col0, col1, col2 = st.columns([1.2, 1.2, 1])
-    with col0:
-        depto_inf = st.selectbox(
-            "Departamento",
-            lista_deptos,
-            index=lista_deptos.index("Nariño") if "Nariño" in lista_deptos else 0,
-            key="depto_inf"
+    if not (
+        np.isclose(
+            ultimo["IPC_MENSUAL_PASTO_PCT"], 0.47
         )
-    d_inf = DF_LONG[DF_LONG["departamento"] == depto_inf].copy()
-    if d_inf.empty:
-        st.warning(f"Sin datos de {depto_inf}.")
-        st.stop()
-
-    with col1:
-        ind_inf = st.selectbox("Indicador principal", lista_inds, key="ind_inf")
-    with col2:
-        anios_disp = sorted(d_inf[d_inf["indicador"] == ind_inf]["anio"].unique())
-        if not anios_disp:
-            st.warning("No hay años disponibles para este indicador.")
-            st.stop()
-        anio_inf = st.selectbox(
-            "Año de referencia", anios_disp,
-            index=len(anios_disp) - 1, key="anio_inf"
+        and np.isclose(
+            ultimo["IPC_MENSUAL_NACIONAL_PCT"], 0.46
+        )
+    ):
+        raise ValueError(
+            "IPC: control diciembre 2024 no coincide"
         )
 
-    d_ind = d_inf[d_inf["indicador"] == ind_inf].sort_values("anio")
-    val_ult = float(d_ind.loc[d_ind["anio"] == anio_inf, "valor"].iloc[0]) if anio_inf in d_ind["anio"].values else None
+    return resultado
 
-    prev = d_ind[d_ind["anio"] == anio_inf - 1]["valor"]
-    delta_pct = None
-    if len(prev) and float(prev.iloc[0]) != 0 and val_ult is not None:
-        delta_pct = (val_ult - float(prev.iloc[0])) / float(prev.iloc[0]) * 100
 
-    nac = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]["valor"].mean()
-    rank_df = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)].sort_values("valor", ascending=False).reset_index(drop=True)
-    pos_nar = rank_df[rank_df["departamento"] == depto_inf]
-    posicion = pos_nar.index[0] + 1 if not pos_nar.empty else None
+def calcular_ictc(raw):
+    hoja = pd.read_excel(
+        io.BytesIO(raw),
+        sheet_name="Anexo1",
+        header=None,
+    ).iloc[:, :3].copy()
 
-    ultimos = d_ind.tail(5)
-    tendencia = "estable"
-    if len(ultimos) >= 3:
-        cambio = (ultimos["valor"].iloc[-1] - ultimos["valor"].iloc[0]) / ultimos["valor"].iloc[0] * 100
-        if cambio > 5:
-            tendencia = "ascendente"
-        elif cambio < -5:
-            tendencia = "descendente"
+    hoja.columns = [
+        "anio_raw",
+        "mes_raw",
+        "valor_raw",
+    ]
 
-    def generar_interpretacion_extensa():
-        txt = []
-        txt.append(f"### 1. Contexto del indicador **{ind_inf}** en {depto_inf} ({anio_inf})")
-        if val_ult is not None:
-            txt.append(
-                f"En el año **{anio_inf}**, el valor registrado del indicador **{ind_inf}** para el departamento de {depto_inf} "
-                f"fue de **{val_ult:,.1f}**."
+    def anio(v):
+        try:
+            valor = int(float(v))
+
+            return (
+                float(valor)
+                if 2000 <= valor <= 2100
+                else np.nan
             )
-        if delta_pct is not None:
-            sentido = "un aumento" if delta_pct > 0 else "una disminución"
-            txt.append(f"Respecto al año anterior se observó {sentido} de **{abs(delta_pct):.1f}%**.")
-        if nac is not None and val_ult is not None:
-            rel = "por encima" if val_ult > nac else "por debajo"
-            txt.append(
-                f"Al contrastar con el promedio nacional del mismo año (**{nac:,.1f}**), "
-                f"{depto_inf} se ubica **{rel}** de dicha referencia."
-            )
-        if posicion is not None:
-            txt.append(
-                f"En el ranking nacional de **{ind_inf}** en **{anio_inf}**, "
-                f"{depto_inf} ocupó la posición **{posicion}** de **{len(rank_df)}** entidades territoriales."
-            )
-        txt.append(f"La tendencia de los últimos años se caracteriza como **{tendencia}**.")
-        txt.append("\n### 2. Lectura de política pública")
-        txt.append(
-            "Se sugiere profundizar el análisis con series más largas y contrastes territoriales "
-            "para orientar intervenciones de política pública. La combinación de evidencia cuantitativa "
-            "con lectura cualitativa territorial resulta indispensable."
+
+        except (ValueError, TypeError):
+            return np.nan
+
+    hoja["anio"] = hoja["anio_raw"].map(anio).ffill()
+
+    mapa = {
+        m: i + 1
+        for i, m in enumerate(
+            "enero febrero marzo abril mayo junio julio agosto "
+            "septiembre octubre noviembre diciembre".split()
         )
-        txt.append("\n### 3. Consideraciones metodológicas")
-        txt.append(
-            "Los datos departamentales provienen de fuentes oficiales (datos.gov.co). "
-            "Las variaciones interanuales y las posiciones relativas deben interpretarse considerando "
-            "posibles cambios metodológicos en las series originales y la cobertura temporal disponible."
-        )
-        return "\n\n".join(txt)
+    }
 
-    interpretacion = generar_interpretacion_extensa()
+    hoja["n_mes"] = hoja["mes_raw"].map(
+        normalizar
+    ).map(mapa)
 
-    with tab_r1:
-        st.subheader("Resumen Ejecutivo")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric(f"{ind_inf}", f"{val_ult:,.1f}" if val_ult is not None else "—",
-                  f"{delta_pct:+.1f}%" if delta_pct is not None else None)
-        c2.metric("Promedio nacional", f"{nac:,.1f}" if nac is not None else "—")
-        c3.metric("Posición nacional", f"{posicion}°" if posicion else "—")
-        c4.metric("Año de referencia", str(anio_inf))
-        st.markdown(interpretacion)
+    hoja[I] = hoja["valor_raw"].map(numero)
 
-    with tab_r2:
-        st.subheader("Evolución Temporal")
-        if not d_ind.empty:
-            fig = px.line(d_ind, x="anio", y="valor", markers=True, title=f"{ind_inf} – {depto_inf}")
-            if len(d_ind) >= 3:
-                z = np.polyfit(d_ind["anio"], d_ind["valor"], 1)
-                trend = np.poly1d(z)(d_ind["anio"])
-                fig.add_trace(go.Scatter(
-                    x=d_ind["anio"], y=trend, mode="lines",
-                    name="Tendencia lineal", line=dict(dash="dash", color="#A78BFA")
-                ))
-            fig.add_vline(x=anio_inf, line_dash="dot", line_color="#22D3EE")
-            fig.update_layout(height=450)
-            st.plotly_chart(style_fig(fig), use_container_width=True)
+    hoja = hoja[
+        hoja["anio"].between(2018, 2024)
+        & hoja["n_mes"].notna()
+        & hoja[I].notna()
+    ].copy()
 
-    with tab_r3:
-        st.subheader("Análisis Comparativo (departamentos)")
-        d_comp = DF_LONG[(DF_LONG["indicador"] == ind_inf) & (DF_LONG["anio"] == anio_inf)]
-        if not d_comp.empty:
-            d_comp = d_comp.sort_values("valor", ascending=True)
-            fig = px.bar(
-                d_comp, x="valor", y="departamento", orientation="h",
-                color="valor", color_continuous_scale="Viridis",
-                title=f"{ind_inf} · {anio_inf}"
-            )
-            fig.update_layout(height=max(420, 14 * len(d_comp)))
-            st.plotly_chart(style_fig(fig), use_container_width=True)
-
-    with tab_r4:
-        st.subheader("Exportación de Reportes")
-        notas_extra = st.text_area("Notas adicionales del analista (opcional)", height=100)
-        md_lines = [
-            f"# Informe de Política – Observatorio Económico y Social",
-            f"**Fecha de generación:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            f"**Territorio:** {depto_inf}",
-            f"**Indicador:** {ind_inf}",
-            f"**Año de referencia:** {anio_inf}",
-            "",
-            "## 1. Resumen Ejecutivo",
-            f"- Valor en {depto_inf} ({anio_inf}): **{val_ult:,.1f}**" if val_ult is not None else "- Valor: N/D",
-            f"- Variación interanual: **{delta_pct:+.1f}%**" if delta_pct is not None else "- Variación: N/D",
-            f"- Promedio nacional: **{nac:,.1f}**" if nac is not None else "",
-            f"- Posición nacional: **{posicion}°** de {len(rank_df)}" if posicion else "",
-            f"- Tendencia reciente: **{tendencia}**",
-            "",
-            "## 2. Interpretación automática",
-            interpretacion,
-            "",
-        ]
-        if notas_extra.strip():
-            md_lines += ["## 3. Notas del analista", notas_extra, ""]
-        md_lines += [
-            "## Fuentes",
-            "- datos.gov.co (APIs SODA) – datos oficiales del Gobierno de Colombia",
-            "- Observatorio Económico y Social – Universidad de Nariño",
-        ]
-        md_content = "\n".join(md_lines)
-        csv_buf = d_ind.to_csv(index=False).encode("utf-8")
-        c1, c2 = st.columns(2)
-        c1.download_button("⬇️ Descargar CSV (serie)", data=csv_buf,
-                           file_name=f"informe_{ind_inf}_{depto_inf}_{anio_inf}.csv", mime="text/csv")
-        c2.download_button("⬇️ Descargar Informe Markdown", data=md_content.encode("utf-8"),
-                           file_name=f"informe_politica_{ind_inf}_{anio_inf}_{datetime.now().strftime('%Y%m%d')}.md",
-                           mime="text/markdown")
-        st.markdown("### Vista previa del informe")
-        st.markdown(md_content)
-
-elif seccion == "💬 Chatbot del Observatorio":
-    st.markdown("## 💬 Chatbot del Observatorio Económico")
-    st.markdown(
-        """
-        <div class="tip-box">
-        Asistente contextual. Puedes consultar indicadores de cualquier departamento e indicar el año.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    hoja["mes"] = pd.PeriodIndex(
+        year=hoja["anio"].astype(int),
+        month=hoja["n_mes"].astype(int),
+        freq="M",
     )
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "Hola. Soy el asistente del **Observatorio Económico y Social**. "
-                    "Puedo ayudarte con datos oficiales de todos los departamentos de Colombia "
-                    "(PIB, seguridad, inversión DNP, educación). ¿Qué deseas consultar?"
+    resultado = hoja[
+        ["mes", I]
+    ].sort_values("mes").reset_index(drop=True)
+
+    auditar_meses(
+        resultado,
+        MES_84,
+        [I],
+    )
+
+    if not (
+        np.isclose(resultado.iloc[0][I], 0.70)
+        and np.isclose(resultado.iloc[1][I], 0.83)
+    ):
+        raise ValueError(
+            "ICTC: controles históricos no coinciden"
+        )
+
+    return resultado
+
+
+def descubrir_csv_publicos():
+    archivos = []
+    errores = []
+    vistos = set()
+
+    claves = (
+        "sipsa_indicadores",
+        "indicadores_mensuales",
+        "base_integrada",
+        "base_econometrica",
+        "base_estimacion",
+        "pm_ponderado",
+        "variable3_brecha",
+        "ictc_mensual",
+    )
+
+    for repo in (REPO_SIPSA, REPO_RNDC):
+        try:
+            metadata = requests.get(
+                f"https://api.github.com/repos/{repo}",
+                timeout=20,
+            )
+            metadata.raise_for_status()
+
+            rama = metadata.json().get(
+                "default_branch",
+                "main",
+            )
+
+            ruta = (
+                f"https://api.github.com/repos/{repo}/"
+                f"git/trees/{rama}?recursive=1"
+            )
+
+            respuesta = requests.get(
+                ruta,
+                timeout=25,
+            )
+            respuesta.raise_for_status()
+
+            for item in respuesta.json().get("tree", []):
+                nombre = item.get("path", "")
+
+                if item.get("type") != "blob":
+                    continue
+
+                if not nombre.lower().endswith(
+                    (".csv", ".parquet")
+                ):
+                    continue
+
+                if not any(
+                    clave in nombre.lower()
+                    for clave in claves
+                ):
+                    continue
+
+                url = (
+                    f"https://raw.githubusercontent.com/"
+                    f"{repo}/{rama}/{nombre}"
+                )
+
+                if url not in vistos:
+                    archivos.append((nombre, url))
+                    vistos.add(url)
+
+        except Exception as exc:
+            errores.append(
+                f"Inventario {repo}: {exc}"
+            )
+
+        try:
+            releases = requests.get(
+                f"https://api.github.com/repos/{repo}/releases",
+                timeout=20,
+            )
+            releases.raise_for_status()
+
+            for release in releases.json()[:10]:
+                for asset in release.get("assets", []):
+                    nombre = asset["name"]
+
+                    if not nombre.lower().endswith(
+                        (".csv", ".parquet")
+                    ):
+                        continue
+
+                    if not any(
+                        clave in nombre.lower()
+                        for clave in claves
+                    ):
+                        continue
+
+                    url = asset["browser_download_url"]
+
+                    if url not in vistos:
+                        archivos.append((nombre, url))
+                        vistos.add(url)
+
+        except Exception as exc:
+            errores.append(
+                f"Releases {repo}: {exc}"
+            )
+
+    return archivos, errores
+
+
+@st.cache_data(
+    ttl=3600,
+    show_spinner="Verificando y recuperando datos oficiales...",
+)
+def cargar_datos():
+    base = pd.DataFrame({
+        "mes": MES_84
+    })
+
+    partes = []
+    bitacora = []
+    errores = []
+
+    def trabajo(nombre):
+        raw, url = verificar_descarga(nombre)
+
+        parsers = {
+            "IPC": calcular_ipc,
+            "ICTC": calcular_ictc,
+            "RNDC": lambda v: normalizar_base(
+                leer_tabla(v, "rndc.csv"),
+                "RNDC",
+            ),
+        }
+
+        tabla = parsers[nombre](raw)
+
+        if nombre == "RNDC":
+            auditar_meses(
+                tabla,
+                MES_59,
+                [T],
+            )
+
+        return (
+            nombre,
+            tabla,
+            url,
+            sha(raw),
+            len(raw),
+            "SHA-256 verificado",
+        )
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        procesos = {
+            nombre: executor.submit(trabajo, nombre)
+            for nombre in ("IPC", "ICTC", "RNDC")
+        }
+
+        for nombre, futuro in procesos.items():
+            try:
+                partes.append(futuro.result())
+
+            except Exception as exc:
+                errores.append(
+                    f"{nombre}: {exc}"
+                )
+
+    candidatos, incidencias = descubrir_csv_publicos()
+    errores.extend(incidencias)
+
+    for nombre, url in candidatos:
+        try:
+            raw = descargar(url)
+
+            tabla = normalizar_base(
+                leer_tabla(raw, nombre),
+                nombre,
+            )
+
+            partes.append((
+                nombre,
+                tabla,
+                url,
+                sha(raw),
+                len(raw),
+                "SHA calculado, sin referencia histórica",
+            ))
+
+        except Exception as exc:
+            errores.append(
+                f"{nombre}: {exc}"
+            )
+
+    archivo = (
+        RUNTIME
+        / "SIPSA_AUDITORIA_RESULTADOS"
+        / "SIPSA_INDICADORES_MENSUALES_2018_2024_CORREGIDO.csv"
+    )
+
+    if archivo.is_file():
+        try:
+            raw = archivo.read_bytes()
+
+            tabla = normalizar_base(
+                leer_tabla(raw, archivo.name),
+                archivo.name,
+            )
+
+            partes.append((
+                "SIPSA reconstruido",
+                tabla,
+                str(archivo),
+                sha(raw),
+                len(raw),
+                "Reconstrucción auditada; SHA calculado",
+            ))
+
+        except Exception as exc:
+            errores.append(
+                f"Reconstrucción SIPSA: {exc}"
+            )
+
+    bloqueadas = set()
+    procedencia = {}
+
+    for nombre, tabla, url, huella, tam, control in partes:
+        bitacora.append({
+            "Archivo": nombre,
+            "Procedencia": url,
+            "SHA256": huella,
+            "Tamaño_bytes": tam,
+            "Estado": control,
+        })
+
+        indice = tabla.set_index("mes")
+
+        for variable in tabla.columns:
+            if variable == "mes" or variable in bloqueadas:
+                continue
+
+            nuevo = indice[variable].reindex(
+                base["mes"]
+            ).to_numpy()
+
+            if variable not in base:
+                base[variable] = nuevo
+                procedencia[variable] = nombre
+
+            else:
+                viejo = pd.to_numeric(
+                    base[variable],
+                    errors="coerce",
+                )
+
+                nuevo = pd.Series(
+                    nuevo,
+                    dtype=float,
+                )
+
+                ambos = viejo.notna() & nuevo.notna()
+
+                if ambos.any() and not np.allclose(
+                    viejo[ambos],
+                    nuevo[ambos],
+                    rtol=1e-7,
+                    atol=1e-9,
+                ):
+                    base[variable] = np.nan
+                    bloqueadas.add(variable)
+
+                    errores.append(
+                        f"Conflicto de datos {variable}: "
+                        f"{procedencia[variable]} y {nombre}"
+                    )
+
+                else:
+                    base[variable] = viejo.combine_first(nuevo)
+
+    return base, pd.DataFrame(bitacora), errores
+
+
+def reconstruir_sipsa():
+    endpoints = [
+        (
+            "https://drive.google.com/uc?"
+            f"export=download&id={NOTEBOOK_ID}"
+        ),
+        (
+            "https://drive.usercontent.google.com/download?"
+            f"id={NOTEBOOK_ID}&export=download&confirm=t"
+        ),
+    ]
+
+    problemas = []
+
+    for url in endpoints:
+        try:
+            notebook = requests.get(
+                url,
+                timeout=90,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+
+            notebook.raise_for_status()
+            contenido = notebook.json()
+
+            fuente = "".join(
+                contenido["cells"][2]["source"]
+            )
+
+            if sha(fuente.encode("utf-8")) != SIPSA_CELDA_SHA:
+                raise ValueError(
+                    "La fase SIPSA pública cambió respecto "
+                    "al Colab auditado"
+                )
+
+            RUNTIME.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            rutas = {
+                "/content/SIPSA_DANE": str(
+                    RUNTIME / "SIPSA_DANE"
+                ),
+                "/content/SIPSA_GITHUB_CACHE": str(
+                    RUNTIME / "SIPSA_GITHUB_CACHE"
+                ),
+                "/content/SIPSA_AUDITORIA_RESULTADOS": str(
+                    RUNTIME / "SIPSA_AUDITORIA_RESULTADOS"
                 ),
             }
-        ]
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            for actual, destino in rutas.items():
+                fuente = fuente.replace(
+                    actual,
+                    destino,
+                )
 
-    if prompt := st.chat_input("Escribe tu pregunta…"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            with st.spinner("Analizando…"):
-                resp = chatbot_respuesta(prompt, DF_LONG, lista_inds, lista_deptos)
-            st.markdown(resp)
-        st.session_state.messages.append({"role": "assistant", "content": resp})
+            script = (
+                RUNTIME / "sipsa_fases_1_7_verificadas.py"
+            )
 
-elif seccion == "©️ Derechos y Créditos":
-    st.markdown("## ©️ Derechos Reservados y Créditos de Autor")
-    st.markdown(
-        """
-        <div class="credits-box">
-            <h2>Observatorio Económico y Social</h2>
-            <p class="meta">Universidad de Nariño · Colombia</p>
+            script.write_text(
+                fuente,
+                encoding="utf-8",
+            )
 
-            <h3>Propiedad intelectual</h3>
-            <p>
-                El código fuente, la arquitectura analítica, el diseño de interfaz y los módulos
-                de procesamiento del <b>Observatorio Económico y Social</b> son propiedad de sus
-                desarrolladores y de la Universidad de Nariño. Queda prohibida la reproducción total o
-                parcial con fines comerciales sin autorización expresa.
-            </p>
+            resultado = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=BASE,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
 
-            <h3>Datos y fuentes</h3>
-            <ul>
-                <li><b>datos.gov.co</b> – Datos abiertos del Gobierno de Colombia (APIs SODA).</li>
-                <li>Indicadores cargados: PIB departamental (precios constantes), Homicidios, 
-                    Recursos DNP, Cobertura y Matrícula educativa, Matrícula de Educación Superior.</li>
-                <li>Solo se incluyen los 33 territorios oficiales (32 departamentos + Bogotá D.C.).</li>
-                <li>Años filtrados entre 2005 y 2025 para garantizar calidad y coherencia.</li>
-                <li>No se incluyen datos municipales porque no existe una fuente pública estable 
-                    y completa de valor agregado municipal para todos los departamentos en el formato requerido.</li>
-            </ul>
+            if resultado.returncode:
+                raise RuntimeError(
+                    (resultado.stderr or resultado.stdout)[-1800:]
+                )
 
-            <h3>Desarrolladores</h3>
-            <p>
-                <b>Jeison Ortega</b> · <b>Juan David Granja</b> · <b>Helmer Rivera</b> · <b>Francisco Quiroz</b>
-            </p>
-            <p class="meta">Universidad de Nariño</p>
+            archivo = (
+                RUNTIME
+                / "SIPSA_AUDITORIA_RESULTADOS"
+                / "SIPSA_INDICADORES_MENSUALES_2018_2024_CORREGIDO.csv"
+            )
 
-            <h3>Aviso de uso</h3>
-            <p>
-                Esta herramienta está orientada a investigación, docencia y apoyo a la formulación
-                de política pública. Los resultados de modelos (VAR, ML, simulaciones) deben 
-                interpretarse con precaución y contrastarse con fuentes oficiales antes de tomar decisiones.
-            </p>
+            if not archivo.is_file():
+                raise ValueError(
+                    "La fase auditada no generó el indicador mensual"
+                )
 
-            <p class="meta" style="margin-top:1.5rem;">
-                © Universidad de Nariño · Observatorio Económico y Social · Todos los derechos reservados
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+            tabla = normalizar_base(
+                pd.read_csv(archivo),
+                archivo.name,
+            )
+
+            auditar_meses(
+                tabla,
+                MES_84,
+                [P],
+            )
+
+            return (
+                f"Reconstrucción satisfactoria: 84 meses. "
+                f"SHA-256: {sha(archivo.read_bytes())}"
+            )
+
+        except Exception as exc:
+            problemas.append(str(exc)[:350])
+
+    raise RuntimeError(
+        " | ".join(problemas)
     )
 
-st.markdown("---")
+
+def muestra_comun(base, variables, minimo=1):
+    faltantes = [
+        v for v in variables
+        if v not in base
+    ]
+
+    if faltantes:
+        raise ValueError(
+            "Faltan variables: " + ", ".join(faltantes)
+        )
+
+    d = base.loc[
+        base["mes"].isin(MES_59),
+        ["mes"] + variables,
+    ].copy()
+
+    if (
+        len(d) != 59
+        or d[variables].isna().any().any()
+    ):
+        raise ValueError(
+            "No están completos los 59 meses comunes. "
+            "No se realizan imputaciones."
+        )
+
+    auditar_meses(
+        d,
+        MES_59,
+        variables,
+    )
+
+    if len(d) < minimo:
+        raise ValueError(
+            "Muestra insuficiente"
+        )
+
+    return d.reset_index(drop=True)
+
+
+def construir_modelo(
+    base,
+    L=2,
+    ar=True,
+    transporte=T,
+    precios=P,
+):
+    d = muestra_comun(
+        base,
+        [Y, transporte, precios],
+        59,
+    )
+
+    z = d[["mes", Y]].copy()
+    columnas = []
+
+    if ar:
+        z["B_L1"] = d[Y].shift(1)
+        columnas.append("B_L1")
+
+    for variable, prefijo in [
+        (transporte, "T"),
+        (precios, "P"),
+    ]:
+        for lag in range(L + 1):
+            nombre = f"{prefijo}_L{lag}"
+
+            z[nombre] = d[variable].shift(lag)
+            columnas.append(nombre)
+
+    z = z[
+        z["mes"].isin(MES_56)
+    ].dropna().reset_index(drop=True)
+
+    auditar_meses(
+        z,
+        MES_56,
+        [Y] + columnas,
+    )
+
+    return z, columnas
+
+
+def ajustar(
+    base,
+    L=2,
+    ar=True,
+    hac=3,
+    transporte=T,
+    precios=P,
+    excluir=None,
+    estacionalidad=False,
+):
+    z, columnas = construir_modelo(
+        base,
+        L,
+        ar,
+        transporte,
+        precios,
+    )
+
+    if excluir is not None:
+        z = z[
+            z["mes"] != pd.Period(excluir)
+        ].copy()
+
+    if estacionalidad:
+        trimestre = (
+            ((z["mes"].dt.month - 1) // 3) + 1
+        )
+
+        for q in (2, 3, 4):
+            nombre = f"Q{q}"
+
+            z[nombre] = (
+                trimestre == q
+            ).astype(int)
+
+            columnas.append(nombre)
+
+    X = sm.add_constant(
+        z[columnas].astype(float),
+        has_constant="add",
+    )
+
+    if len(z) <= X.shape[1] + 8:
+        raise ValueError(
+            "Grados de libertad insuficientes"
+        )
+
+    y = z[Y].astype(float)
+
+    mco = sm.OLS(
+        y, X
+    ).fit()
+
+    robusto = sm.OLS(
+        y, X
+    ).fit(
+        cov_type="HAC",
+        cov_kwds={"maxlags": hac},
+        use_t=True,
+    )
+
+    if not np.isfinite(
+        robusto.params.to_numpy()
+    ).all():
+        raise ValueError(
+            "Parámetros inválidos"
+        )
+
+    return robusto, mco, z, X
+
+
+def tabla_coef(modelo):
+    ic = modelo.conf_int()
+
+    return pd.DataFrame({
+        "Regresor": modelo.params.index,
+        "Coeficiente": modelo.params.values,
+        "Error_HAC": modelo.bse.values,
+        "p_HAC": modelo.pvalues.values,
+        "IC_inf": ic.iloc[:, 0].values,
+        "IC_sup": ic.iloc[:, 1].values,
+    })
+
+
+def contraste_bloques(modelo, L=2):
+    filas = []
+
+    for nombre, prefijo in [
+        ("Transporte", "T"),
+        ("SIPSA", "P"),
+    ]:
+        columnas = [
+            f"{prefijo}_L{j}"
+            for j in range(L + 1)
+        ]
+
+        R = np.zeros(
+            (L + 1, len(modelo.params))
+        )
+
+        for i, col in enumerate(columnas):
+            R[
+                i,
+                modelo.params.index.get_loc(col)
+            ] = 1
+
+        prueba_f = modelo.wald_test(
+            R,
+            use_f=True,
+            scalar=True,
+        )
+
+        prueba_suma = modelo.t_test(
+            R.sum(axis=0)
+        )
+
+        filas.append({
+            "Bloque": nombre,
+            "p_conjunto_HAC": float(prueba_f.pvalue),
+            "Suma": float(
+                modelo.params[columnas].sum()
+            ),
+            "IC_suma_inf": float(
+                prueba_suma.conf_int()[0, 0]
+            ),
+            "IC_suma_sup": float(
+                prueba_suma.conf_int()[0, 1]
+            ),
+        })
+
+    return pd.DataFrame(filas)
+
+
+def diagnosticar(mco, z, X):
+    e = mco.resid
+
+    valores = {
+        "Jarque_Bera_p": float(
+            jarque_bera(e)[1]
+        ),
+        "LjungBox_6_p": float(
+            acorr_ljungbox(
+                e,
+                lags=[6],
+                return_df=True,
+            )["lb_pvalue"].iloc[0]
+        ),
+        "LjungBox_12_p": float(
+            acorr_ljungbox(
+                e,
+                lags=[12],
+                return_df=True,
+            )["lb_pvalue"].iloc[0]
+        ),
+        "BreuschGodfrey_3_p": float(
+            acorr_breusch_godfrey(
+                mco,
+                nlags=3,
+            )[1]
+        ),
+        "BreuschPagan_p": float(
+            het_breuschpagan(e, X)[1]
+        ),
+        "CUSUM_p": float(
+            breaks_cusumolsresid(
+                e,
+                ddof=X.shape[1],
+            )[1]
+        ),
+    }
+
+    try:
+        valores["RESET_p"] = float(
+            linear_reset(
+                mco,
+                power=2,
+                use_f=True,
+            ).pvalue
+        )
+
+    except Exception:
+        valores["RESET_p"] = np.nan
+
+    valores["Numero_condicion"] = float(
+        np.linalg.cond(X)
+    )
+
+    vif = []
+
+    for i, col in enumerate(X.columns):
+        if col != "const":
+            vif.append({
+                "Regresor": col,
+                "VIF": variance_inflation_factor(
+                    X.values, i
+                ),
+            })
+
+    datos = z[
+        ["mes", Y]
+    ].copy()
+
+    datos["Ajuste"] = (
+        mco.fittedvalues.to_numpy()
+    )
+
+    datos["Residuo"] = e.to_numpy()
+
+    datos["Cook"] = (
+        OLSInfluence(mco).cooks_distance[0]
+    )
+
+    return (
+        pd.DataFrame([valores]),
+        datos,
+        pd.DataFrame(vif),
+    )
+
+
+def tabla_robustez(base):
+    opciones = [
+        (
+            f"{familia} L{L}",
+            dict(
+                L=L,
+                ar=(familia == "ARDL"),
+            ),
+        )
+        for familia in ("DL", "ARDL")
+        for L in range(4)
+    ]
+
+    opciones += [
+        (f"HAC({h})", dict(hac=h))
+        for h in (1, 6)
+    ]
+
+    opciones += [
+        (
+            "Excluir 2023-02",
+            dict(excluir="2023-02"),
+        ),
+        (
+            "Dummies trimestrales",
+            dict(estacionalidad=True),
+        ),
+    ]
+
+    alternativas_precios = (
+        "PM_no_ponderado_t",
+        "PM_ponderado_lagQ_t",
+        "PM_100",
+        "PM_95",
+    )
+
+    for alternativa in alternativas_precios:
+        if (
+            alternativa in base
+            and base[alternativa].notna().any()
+        ):
+            opciones.append((
+                f"SIPSA {alternativa}",
+                dict(precios=alternativa),
+            ))
+
+    alternativas_transporte = (
+        I,
+        "VAR_FLETE_FISHER_PCT",
+        "VAR_FLETE_CRUDO_PCT",
+        "VAR_FLETE_SIN_2000_PCT",
+    )
+
+    for alternativa in alternativas_transporte:
+        if (
+            alternativa in base
+            and base[alternativa].notna().any()
+        ):
+            opciones.append((
+                f"Transporte {alternativa}",
+                dict(transporte=alternativa),
+            ))
+
+    filas = []
+
+    for nombre, kwargs in opciones:
+        try:
+            m, o, z, _ = ajustar(
+                base,
+                **kwargs,
+            )
+
+            prueba = contraste_bloques(
+                m,
+                kwargs.get("L", 2),
+            )
+
+            filas.append({
+                "Especificación": nombre,
+                "N": len(z),
+                "R2_aj": o.rsquared_adj,
+                "AIC": o.aic,
+                "BIC": o.bic,
+                "p_transporte": prueba.iloc[0]["p_conjunto_HAC"],
+                "p_SIPSA": prueba.iloc[1]["p_conjunto_HAC"],
+                "Suma_transporte": prueba.iloc[0]["Suma"],
+                "Estado": "OK",
+            })
+
+        except Exception as exc:
+            filas.append({
+                "Especificación": nombre,
+                "Estado": str(exc)[:140],
+            })
+
+    return pd.DataFrame(filas)
+
+
+def ventanas_moviles(base, ancho=36):
+    z, columnas = construir_modelo(base)
+
+    filas = []
+
+    for inicio in range(len(z) - ancho + 1):
+        v = z.iloc[
+            inicio:inicio + ancho
+        ]
+
+        X = sm.add_constant(
+            v[columnas],
+            has_constant="add",
+        )
+
+        m = sm.OLS(
+            v[Y], X
+        ).fit(
+            cov_type="HAC",
+            cov_kwds={"maxlags": 3},
+            use_t=True,
+        )
+
+        pruebas = contraste_bloques(m)
+
+        filas.append({
+            "Inicio": str(v["mes"].iloc[0]),
+            "Fin": str(v["mes"].iloc[-1]),
+            "RNDC_suma": pruebas.iloc[0]["Suma"],
+            "RNDC_p": pruebas.iloc[0]["p_conjunto_HAC"],
+            "SIPSA_suma": pruebas.iloc[1]["Suma"],
+        })
+
+    return pd.DataFrame(filas)
+
+
+def comparar_huber(base):
+    z, columnas = construir_modelo(base)
+
+    X = sm.add_constant(
+        z[columnas],
+        has_constant="add",
+    )
+
+    mco = sm.OLS(
+        z[Y], X
+    ).fit()
+
+    rlm = sm.RLM(
+        z[Y],
+        X,
+        M=sm.robust.norms.HuberT(),
+    ).fit()
+
+    filas = []
+
+    for nombre, prefijo in [
+        ("RNDC", "T"),
+        ("SIPSA", "P"),
+    ]:
+        columnas_bloque = [
+            f"{prefijo}_L{j}"
+            for j in range(3)
+        ]
+
+        filas.append({
+            "Bloque": nombre,
+            "Suma_MCO": float(
+                mco.params[columnas_bloque].sum()
+            ),
+            "Suma_Huber": float(
+                rlm.params[columnas_bloque].sum()
+            ),
+        })
+
+    return pd.DataFrame(filas)
+
+
+def pruebas_estacionariedad(base, variables):
+    filas = []
+
+    for col in variables:
+        try:
+            d = muestra_comun(
+                base,
+                [col],
+                24,
+            )
+
+            a = adfuller(
+                d[col],
+                autolag="AIC",
+            )
+
+            k = kpss(
+                d[col],
+                regression="c",
+                nlags="auto",
+            )
+
+            filas.append({
+                "Variable": NOMBRES.get(col, col),
+                "N": len(d),
+                "ADF": a[0],
+                "p_ADF": a[1],
+                "KPSS": k[0],
+                "p_KPSS_acotado": k[1],
+                "I0_orientativo": (
+                    a[1] < 0.05
+                    and k[1] >= 0.05
+                ),
+            })
+
+        except Exception as exc:
+            filas.append({
+                "Variable": NOMBRES.get(col, col),
+                "Estado": str(exc)[:120],
+            })
+
+    return pd.DataFrame(filas)
+
+
+def pca_kmeans(base, variables, k):
+    d = muestra_comun(
+        base,
+        variables,
+        59,
+    )
+
+    X = StandardScaler().fit_transform(
+        d[variables]
+    )
+
+    pca = PCA(n_components=2)
+
+    plano = pca.fit_transform(X)
+
+    grupos = KMeans(
+        n_clusters=k,
+        random_state=42,
+        n_init=20,
+    ).fit_predict(X)
+
+    resultado = pd.DataFrame({
+        "mes": d["mes"].astype(str),
+        "PC1": plano[:, 0],
+        "PC2": plano[:, 1],
+        "Grupo": grupos.astype(str),
+    })
+
+    cargas = pd.DataFrame(
+        pca.components_.T,
+        index=variables,
+        columns=["PC1", "PC2"],
+    )
+
+    return (
+        resultado,
+        cargas,
+        pca.explained_variance_ratio_,
+    )
+
+
+def var_condicional(base, variables, lags, horizonte):
+    d = muestra_comun(
+        base,
+        variables,
+        59,
+    )
+
+    pruebas = pruebas_estacionariedad(
+        base,
+        variables,
+    )
+
+    if not pruebas["I0_orientativo"].fillna(False).all():
+        raise ValueError(
+            "VAR en niveles no habilitado: "
+            "no hay evidencia conjunta de I(0)"
+        )
+
+    modelo = VAR(
+        d[variables]
+    ).fit(lags)
+
+    if not modelo.is_stable():
+        raise ValueError(
+            "VAR inestable: se omiten las IRF"
+        )
+
+    return (
+        modelo,
+        modelo.irf(horizonte).irfs,
+    )
+
+
+def evaluar_vecm(base, variables):
+    d = muestra_comun(
+        base,
+        variables,
+        59,
+    )
+
+    filas = []
+
+    for variable in variables:
+        filas.append({
+            "Variable": variable,
+            "ADF_p_nivel": adfuller(
+                d[variable],
+                autolag="AIC",
+            )[1],
+            "ADF_p_diferencia": adfuller(
+                d[variable].diff().dropna(),
+                autolag="AIC",
+            )[1],
+        })
+
+    tabla = pd.DataFrame(filas)
+
+    condicion = (
+        (tabla["ADF_p_nivel"] >= 0.05)
+        & (tabla["ADF_p_diferencia"] < 0.05)
+    )
+
+    if not condicion.all():
+        return tabla, None
+
+    johansen = coint_johansen(
+        d[variables],
+        det_order=0,
+        k_ar_diff=1,
+    )
+
+    resultados = pd.DataFrame({
+        "Traza": johansen.lr1,
+        "Crítico_95": johansen.cvt[:, 1],
+    })
+
+    return tabla, resultados
+
+
+def multiplicadores(modelo, variable, cambio, horizonte):
+    parametros = list(
+        modelo.params.index
+    )
+
+    cov = modelo.cov_params().to_numpy(float)
+
+    rho = float(
+        modelo.params.get("B_L1", 0.0)
+    )
+
+    posicion_rho = (
+        parametros.index("B_L1")
+        if "B_L1" in parametros
+        else None
+    )
+
+    resultado = 0.0
+    derivada = np.zeros(len(parametros))
+    filas = []
+
+    for h in range(horizonte + 1):
+        previo = resultado
+        previo_g = derivada.copy()
+
+        prefijo = "T" if variable == T else "P"
+        nombre = f"{prefijo}_L{h}"
+
+        resultado = (
+            rho * previo
+            + float(modelo.params.get(nombre, 0.0))
+        )
+
+        derivada = rho * previo_g
+
+        if posicion_rho is not None:
+            derivada[posicion_rho] += previo
+
+        if nombre in parametros:
+            derivada[parametros.index(nombre)] += 1
+
+        varianza = float(
+            derivada @ cov @ derivada
+        )
+
+        error = np.sqrt(max(varianza, 0.0))
+
+        filas.append({
+            "Horizonte": h,
+            "Respuesta_pp": cambio * resultado,
+            "IC95_inf": (
+                cambio * resultado
+                - 1.96 * abs(cambio) * error
+            ),
+            "IC95_sup": (
+                cambio * resultado
+                + 1.96 * abs(cambio) * error
+            ),
+        })
+
+    return pd.DataFrame(filas)
+
+
+def evaluar_ml(base, elegidos):
+    d = muestra_comun(
+        base,
+        [Y, T, P],
+        59,
+    )
+
+    tabla = pd.DataFrame({
+        "mes": d["mes"],
+        "objetivo": d[Y],
+    })
+
+    for variable in (Y, T, P):
+        for lag in (1, 2):
+            tabla[f"{variable}_L{lag}"] = (
+                d[variable].shift(lag)
+            )
+
+    tabla = tabla.dropna().reset_index(drop=True)
+
+    variables = [
+        c for c in tabla.columns
+        if c not in ("mes", "objetivo")
+    ]
+
+    inicio = len(tabla) - 26
+
+    if inicio < 20:
+        raise ValueError(
+            "Muestra de entrenamiento insuficiente"
+        )
+
+    filas = []
+
+    for t in range(inicio, len(tabla)):
+        train = tabla.iloc[:t]
+        test = tabla.iloc[[t]]
+
+        X = train[variables].to_numpy(float)
+        Xt = test[variables].to_numpy(float)
+        y = train["objetivo"].to_numpy(float)
+
+        escalador = StandardScaler().fit(X)
+
+        valores = {
+            "Media histórica": float(y.mean())
+        }
+
+        ar_x = sm.add_constant(
+            train[[f"{Y}_L1"]],
+            has_constant="add",
+        )
+
+        ar_xt = sm.add_constant(
+            test[[f"{Y}_L1"]],
+            has_constant="add",
+        )
+
+        ajuste_ar = sm.OLS(
+            y, ar_x
+        ).fit()
+
+        valores["AR(1)"] = float(
+            ajuste_ar.predict(ar_xt).iloc[0]
+        )
+
+        ajuste_arx = sm.OLS(
+            y,
+            sm.add_constant(
+                X,
+                has_constant="add",
+            ),
+        ).fit()
+
+        valores["ARX"] = float(
+            ajuste_arx.predict(
+                sm.add_constant(
+                    Xt,
+                    has_constant="add",
+                )
+            )[0]
+        )
+
+        modelos = {
+            "Ridge": Ridge(alpha=1.0),
+            "Lasso": Lasso(
+                alpha=0.01,
+                max_iter=15000,
+            ),
+            "SVR": SVR(
+                C=1.0,
+                epsilon=0.1,
+            ),
+            "MLP": MLPRegressor(
+                hidden_layer_sizes=(12,),
+                max_iter=400,
+                random_state=42,
+            ),
+        }
+
+        for nombre, modelo in modelos.items():
+            if nombre in elegidos:
+                modelo.fit(
+                    escalador.transform(X),
+                    y,
+                )
+
+                valores[nombre] = float(
+                    modelo.predict(
+                        escalador.transform(Xt)
+                    )[0]
+                )
+
+        for nombre, prediccion in valores.items():
+            if nombre in elegidos:
+                filas.append({
+                    "mes": str(test["mes"].iloc[0]),
+                    "Modelo": nombre,
+                    "Observado": float(
+                        test["objetivo"].iloc[0]
+                    ),
+                    "Predicho": prediccion,
+                })
+
+    pronosticos = pd.DataFrame(filas)
+
+    resumen = pd.DataFrame([
+        {
+            "Modelo": nombre,
+            "RMSE": np.sqrt(
+                mean_squared_error(
+                    grupo["Observado"],
+                    grupo["Predicho"],
+                )
+            ),
+            "MAE": mean_absolute_error(
+                grupo["Observado"],
+                grupo["Predicho"],
+            ),
+        }
+        for nombre, grupo in pronosticos.groupby("Modelo")
+    ]).sort_values("RMSE")
+
+    return (
+        resumen,
+        pronosticos,
+        tabla,
+        variables,
+        inicio,
+    )
+
+
+def xai(datos, variables, inicio, modelo_nombre):
+    modelos = {
+        "Ridge": Ridge(alpha=1.0),
+        "Lasso": Lasso(
+            alpha=0.01,
+            max_iter=15000,
+        ),
+        "SVR": SVR(
+            C=1.0,
+            epsilon=0.1,
+        ),
+        "MLP": MLPRegressor(
+            hidden_layer_sizes=(12,),
+            max_iter=400,
+            random_state=42,
+        ),
+    }
+
+    X = datos[variables].to_numpy(float)
+    y = datos["objetivo"].to_numpy(float)
+
+    escalador = StandardScaler().fit(
+        X[:inicio]
+    )
+
+    modelo = modelos[modelo_nombre].fit(
+        escalador.transform(X[:inicio]),
+        y[:inicio],
+    )
+
+    importancia = permutation_importance(
+        modelo,
+        escalador.transform(X[inicio:]),
+        y[inicio:],
+        n_repeats=10,
+        random_state=42,
+        scoring="neg_mean_squared_error",
+    )
+
+    return pd.DataFrame({
+        "Regresor": variables,
+        "Importancia": importancia.importances_mean,
+        "Desviación": importancia.importances_std,
+    }).sort_values("Importancia")
+
+
+def senales_historicas(base):
+    d = muestra_comun(
+        base,
+        [T, P],
+        59,
+    )
+
+    filas = []
+
+    for i in range(12, len(d)):
+        anteriores = d.iloc[:i]
+        actual = d.iloc[i]
+
+        umbral_t = anteriores[T].quantile(0.90)
+        umbral_p = anteriores[P].quantile(0.90)
+
+        alto_t = actual[T] > umbral_t
+        alto_p = actual[P] > umbral_p
+
+        if alto_t and alto_p:
+            senal = "Rojo"
+        elif alto_t or alto_p:
+            senal = "Amarillo"
+        else:
+            senal = "Verde"
+
+        filas.append({
+            "mes": str(actual["mes"]),
+            "RNDC": actual[T],
+            "SIPSA": actual[P],
+            "Umbral_RNDC": umbral_t,
+            "Umbral_SIPSA": umbral_p,
+            "Señal": senal,
+        })
+
+    return pd.DataFrame(filas)
+
+
+def figura(fig, altura=430):
+    fig.update_layout(
+        **STYLE,
+        height=altura,
+        margin=dict(
+            l=20,
+            r=20,
+            t=55,
+            b=35,
+        ),
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
+
+    return fig
+
+
+def exportar(df, nombre, etiqueta="Descargar CSV"):
+    d = df.copy()
+
+    if "mes" in d:
+        d["mes"] = d["mes"].astype(str)
+
+    st.download_button(
+        etiqueta,
+        d.to_csv(index=False).encode("utf-8-sig"),
+        file_name=nombre,
+        mime="text/csv",
+    )
+
+
+def grafico_series(base, variables, titulo):
+    datos = base[
+        ["mes"] + variables
+    ].copy()
+
+    datos["mes"] = datos["mes"].astype(str)
+
+    largo = datos.melt(
+        id_vars="mes",
+        var_name="Variable",
+        value_name="Valor",
+    )
+
+    largo["Variable"] = largo["Variable"].map(
+        lambda c: NOMBRES.get(c, c)
+    )
+
+    if len(variables) > 1:
+        graf = px.line(
+            largo,
+            x="mes",
+            y="Valor",
+            color="Variable",
+            facet_row="Variable",
+            title=titulo,
+        )
+
+        graf.for_each_yaxis(
+            lambda eje: eje.update(matches=None)
+        )
+
+        return figura(
+            graf,
+            altura=max(430, len(variables) * 210),
+        )
+
+    return figura(
+        px.line(
+            largo,
+            x="mes",
+            y="Valor",
+            color="Variable",
+            title=titulo,
+        )
+    )
+
+
+def disponibles(base, variables):
+    faltantes = [
+        c for c in variables
+        if c not in base
+        or base[c].notna().sum() == 0
+    ]
+
+    if faltantes:
+        st.warning(
+            "No hay datos suficientes: "
+            + ", ".join(
+                NOMBRES.get(x, x)
+                for x in faltantes
+            )
+        )
+
+    return not faltantes
+
+
+with st.sidebar:
+    st.title("📊 Observatorio Pasto")
+
+    pagina = st.radio(
+        "Navegación",
+        [
+            "🏠 Inicio",
+            "🗂️ Datos y muestras",
+            "📊 Análisis Pasto–Nariño",
+            "📑 Generador de informes",
+            "💬 Chatbot",
+            "© Fuentes y créditos",
+        ],
+    )
+
+    st.divider()
+
+    inicio, fin = st.select_slider(
+        "Periodo descriptivo",
+        options=[
+            str(x) for x in MES_84
+        ],
+        value=("2018-01", "2024-12"),
+    )
+
+    st.caption(
+        "Los modelos del artículo conservan la muestra "
+        "de 56 meses y no cambian con este filtro."
+    )
+
+    if st.button("Actualizar fuentes"):
+        cargar_datos.clear()
+        st.rerun()
+
+
+try:
+    DATA, AUDITORIA, ERRORES = cargar_datos()
+
+except Exception as exc:
+    st.error(
+        f"No se pudo construir el observatorio: {exc}"
+    )
+    st.stop()
+
+
+VARS = [
+    c for c in (Y, T, P, I)
+    if c in DATA
+    and DATA[c].notna().any()
+]
+
+VISTA = DATA[
+    (DATA["mes"] >= pd.Period(inicio))
+    & (DATA["mes"] <= pd.Period(fin))
+].copy()
+
+
+if pagina == "🏠 Inicio":
+    st.title(
+        "Observatorio económico de Pasto y Nariño"
+    )
+
+    st.write(
+        "Costos del transporte de carga, precios mayoristas "
+        "de El Potrerillo y brecha inflacionaria "
+        "Pasto–Colombia · 2018–2024"
+    )
+
+    st.info(
+        "Pasto es la ciudad analizada. Los resultados "
+        "no representan automáticamente todo Nariño."
+    )
+
+    columnas = st.columns(4)
+
+    for panel, variable in zip(
+        columnas,
+        [Y, P, T, I],
+    ):
+        n = (
+            int(DATA[variable].notna().sum())
+            if variable in DATA
+            else 0
+        )
+
+        panel.metric(
+            NOMBRES[variable],
+            f"{n} meses" if n else "No disponible",
+        )
+
+    if VARS:
+        grafico_series(
+            VISTA,
+            VARS,
+            "Evolución mensual de las series observadas",
+        )
+
+    st.markdown(
+        "**Estructura:** 84 meses descriptivos; "
+        "59 meses comunes; 56 observaciones para DL/ARDL. "
+        "Fuentes: DANE y RNDC del Ministerio de Transporte, "
+        "con respaldos en GitHub."
+    )
+
+    st.warning(
+        "Análisis estadístico asociativo. "
+        "No constituye un sistema validado de "
+        "predicción de cierres viales."
+    )
+
+
+elif pagina == "🗂️ Datos y muestras":
+    st.header("Datos, cobertura y auditoría")
+
+    cobertura = []
+
+    for variable in [Y, T, P, I]:
+        fechas = (
+            DATA.loc[
+                DATA[variable].notna(),
+                "mes",
+            ]
+            if variable in DATA
+            else pd.Series(dtype=object)
+        )
+
+        cobertura.append({
+            "Indicador": NOMBRES[variable],
+            "N": len(fechas),
+            "Desde": (
+                str(fechas.min())
+                if len(fechas)
+                else "—"
+            ),
+            "Hasta": (
+                str(fechas.max())
+                if len(fechas)
+                else "—"
+            ),
+        })
+
+    st.dataframe(
+        pd.DataFrame(cobertura),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.subheader("Fuentes y SHA-256")
+
+    st.dataframe(
+        AUDITORIA,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    exportar(
+        AUDITORIA,
+        "auditoria_fuentes.csv",
+    )
+
+    with st.expander(
+        f"Incidencias ({len(ERRORES)})"
+    ):
+        for error in ERRORES:
+            st.write(error)
+
+    st.dataframe(
+        DATA.assign(
+            mes=DATA["mes"].astype(str)
+        ),
+        use_container_width=True,
+    )
+
+    exportar(
+        DATA,
+        "base_integrada_observada.csv",
+    )
+
+    if (
+        P not in DATA
+        or DATA[P].notna().sum() != 84
+    ):
+        st.warning(
+            "SIPSA no está completo. La reconstrucción "
+            "utiliza las fases 1–7 del Colab verificadas "
+            "por SHA-256 y los ZIP del DANE respaldados "
+            "en GitHub."
+        )
+
+        if st.button(
+            "Reconstruir SIPSA sin subir archivos",
+            type="primary",
+        ):
+            try:
+                st.success(reconstruir_sipsa())
+                cargar_datos.clear()
+                st.rerun()
+
+            except Exception as exc:
+                st.error(
+                    f"Reconstrucción no completada: {exc}"
+                )
+
+
+elif pagina == "📊 Análisis Pasto–Nariño":
+    st.header(
+        "Herramientas estadísticas y econométricas"
+    )
+
+    tabs = st.tabs([
+        "EDA",
+        "ADF / KPSS",
+        "ARDL + HAC",
+        "Diagnósticos",
+        "Robustez",
+        "PCA / K-Means",
+        "VAR / VECM",
+        "ML / XAI",
+        "Simulador",
+        "Focus Pasto",
+    ])
+
+    with tabs[0]:
+        elegir = st.multiselect(
+            "Series para EDA",
+            VARS,
+            default=VARS,
+            format_func=lambda c: NOMBRES[c],
+        )
+
+        if elegir:
+            st.dataframe(
+                VISTA[elegir].describe().T,
+                use_container_width=True,
+            )
+
+            grafico_series(
+                VISTA,
+                elegir,
+                "Series seleccionadas",
+            )
+
+            if len(elegir) > 1:
+                correlacion = VISTA[elegir].corr(
+                    min_periods=12
+                )
+
+                figura(
+                    px.imshow(
+                        correlacion,
+                        text_auto=".3f",
+                        zmin=-1,
+                        zmax=1,
+                        color_continuous_scale="RdBu_r",
+                        title="Correlación de Pearson",
+                    )
+                )
+
+            exportar(
+                VISTA[["mes"] + elegir],
+                "series_eda.csv",
+            )
+
+    with tabs[1]:
+        if VARS:
+            estacionarias = pruebas_estacionariedad(
+                DATA,
+                VARS,
+            )
+
+            st.dataframe(
+                estacionarias,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.caption(
+                "ADF: nula de raíz unitaria. "
+                "KPSS: nula de estacionariedad. "
+                "Los valores p de KPSS son tabulados."
+            )
+
+            exportar(
+                estacionarias,
+                "estacionariedad.csv",
+            )
+
+    with tabs[2]:
+        st.latex(
+            r"B_t=\alpha+\rho B_{t-1}"
+            r"+\sum_{j=0}^{L}\beta_jT_{t-j}"
+            r"+\sum_{j=0}^{L}\gamma_jPM_{t-j}+u_t"
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        L = c1.slider(
+            "Rezagos", 0, 3, 2
+        )
+
+        ar = c2.checkbox(
+            "Incluir brecha rezagada",
+            True,
+        )
+
+        hac = c3.slider(
+            "Ancho HAC", 0, 8, 3
+        )
+
+        if disponibles(DATA, [Y, T, P]):
+            try:
+                modelo, mco, z, X = ajustar(
+                    DATA,
+                    L=L,
+                    ar=ar,
+                    hac=hac,
+                )
+
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric("N", len(z))
+
+                c2.metric(
+                    "R² ajustado",
+                    f"{mco.rsquared_adj:.4f}",
+                )
+
+                c3.metric(
+                    "AIC",
+                    f"{mco.aic:.4f}",
+                )
+
+                coef = tabla_coef(modelo)
+
+                bloques = contraste_bloques(
+                    modelo,
+                    L,
+                )
+
+                st.dataframe(
+                    coef,
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                st.dataframe(
+                    bloques,
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                exportar(
+                    coef,
+                    "coeficientes_hac.csv",
+                )
+
+                exportar(
+                    bloques,
+                    "bloques_hac.csv",
+                )
+
+                ajuste = z[
+                    ["mes", Y]
+                ].copy()
+
+                ajuste["Ajustado"] = (
+                    mco.fittedvalues.to_numpy()
+                )
+
+                grafico_series(
+                    ajuste,
+                    [Y, "Ajustado"],
+                    "Brecha observada y ajuste dentro de muestra",
+                )
+
+                if (L, ar, hac) == (2, True, 3):
+                    referencia = {
+                        "Coef_RNDC_t": 0.00913,
+                        "p_RNDC_t": 0.03750,
+                        "p_conjunto_RNDC": 0.14273,
+                        "p_conjunto_SIPSA": 0.23749,
+                    }
+
+                    calculados = {
+                        "Coef_RNDC_t": modelo.params["T_L0"],
+                        "p_RNDC_t": modelo.pvalues["T_L0"],
+                        "p_conjunto_RNDC": (
+                            bloques.iloc[0]["p_conjunto_HAC"]
+                        ),
+                        "p_conjunto_SIPSA": (
+                            bloques.iloc[1]["p_conjunto_HAC"]
+                        ),
+                    }
+
+                    st.caption(
+                        "Contraste con valores redondeados del artículo"
+                    )
+
+                    comparacion = pd.DataFrame([
+                        {
+                            "Control": clave,
+                            "Artículo": valor,
+                            "App": calculados[clave],
+                            "Diferencia": abs(
+                                calculados[clave] - valor
+                            ),
+                        }
+                        for clave, valor in referencia.items()
+                    ])
+
+                    st.dataframe(
+                        comparacion,
+                        hide_index=True,
+                    )
+
+                st.info(
+                    "La significancia individual no establece "
+                    "significancia de los bloques ni causalidad."
+                )
+
+            except Exception as exc:
+                st.error(str(exc))
+
+    with tabs[3]:
+        if disponibles(DATA, [Y, T, P]):
+            try:
+                _, mco, z, X = ajustar(DATA)
+
+                diag, residuos, vif = diagnosticar(
+                    mco,
+                    z,
+                    X,
+                )
+
+                st.dataframe(diag.T)
+
+                st.dataframe(
+                    vif,
+                    hide_index=True,
+                )
+
+                figura(
+                    px.scatter(
+                        residuos,
+                        x="Ajuste",
+                        y="Residuo",
+                        title="Residuos frente al ajuste",
+                    )
+                )
+
+                figura(
+                    px.bar(
+                        residuos.assign(
+                            mes=residuos["mes"].astype(str)
+                        ),
+                        x="mes",
+                        y="Cook",
+                        title="Distancias de Cook",
+                    )
+                )
+
+                exportar(
+                    residuos,
+                    "residuos_ardl.csv",
+                )
+
+            except Exception as exc:
+                st.error(str(exc))
+
+    with tabs[4]:
+        if disponibles(DATA, [Y, T, P]):
+            if st.button(
+                "Comparar 8 modelos DL/ARDL y sensibilidades"
+            ):
+                resultado = tabla_robustez(DATA)
+
+                st.dataframe(
+                    resultado,
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                exportar(
+                    resultado,
+                    "robustez.csv",
+                )
+
+            if st.button(
+                "Comparar MCO frente a Huber"
+            ):
+                try:
+                    st.dataframe(
+                        comparar_huber(DATA),
+                        hide_index=True,
+                    )
+
+                except Exception as exc:
+                    st.error(str(exc))
+
+            if st.button(
+                "Ventanas móviles de 36 meses"
+            ):
+                try:
+                    ventanas = ventanas_moviles(DATA)
+
+                    st.dataframe(
+                        ventanas,
+                        hide_index=True,
+                    )
+
+                    exportar(
+                        ventanas,
+                        "ventanas.csv",
+                    )
+
+                except Exception as exc:
+                    st.error(str(exc))
+
+    with tabs[5]:
+        seleccion = st.multiselect(
+            "Series para PCA",
+            VARS,
+            default=VARS,
+            format_func=lambda x: NOMBRES[x],
+        )
+
+        clusters = st.slider(
+            "K clusters",
+            2,
+            6,
+            3,
+        )
+
+        if (
+            len(seleccion) >= 2
+            and st.button("Ejecutar PCA y K-Means")
+        ):
+            try:
+                coords, cargas, proporcion = pca_kmeans(
+                    DATA,
+                    seleccion,
+                    clusters,
+                )
+
+                st.write(
+                    f"Varianza explicada: "
+                    f"PC1 {proporcion[0]:.1%}; "
+                    f"PC2 {proporcion[1]:.1%}"
+                )
+
+                figura(
+                    px.scatter(
+                        coords,
+                        x="PC1",
+                        y="PC2",
+                        color="Grupo",
+                        hover_data=["mes"],
+                        title="PCA y clusters de meses",
+                    )
+                )
+
+                st.dataframe(cargas)
+
+                exportar(
+                    coords,
+                    "clusters_mensuales.csv",
+                )
+
+                st.caption(
+                    "Se agrupan meses, no departamentos. "
+                    "No se realizan imputaciones."
+                )
+
+            except Exception as exc:
+                st.error(str(exc))
+
+    with tabs[6]:
+        elegir = st.multiselect(
+            "Variables endógenas",
+            VARS,
+            default=[
+                x for x in (Y, T, P)
+                if x in VARS
+            ],
+            max_selections=3,
+            format_func=lambda x: NOMBRES[x],
+        )
+
+        lags = st.slider(
+            "Rezagos VAR",
+            1,
+            3,
+            1,
+        )
+
+        if (
+            len(elegir) >= 2
+            and st.button("Estimar VAR si es admisible")
+        ):
+            try:
+                m, irf = var_condicional(
+                    DATA,
+                    elegir,
+                    lags,
+                    6,
+                )
+
+                st.write({
+                    "AIC": m.aic,
+                    "BIC": m.bic,
+                    "Estable": m.is_stable(),
+                })
+
+                impacto = st.selectbox(
+                    "Impulso",
+                    elegir,
+                )
+
+                respuesta = st.selectbox(
+                    "Respuesta",
+                    elegir,
+                )
+
+                valores = irf[
+                    :,
+                    elegir.index(respuesta),
+                    elegir.index(impacto),
+                ]
+
+                figura(
+                    px.line(
+                        x=list(range(len(valores))),
+                        y=valores,
+                        markers=True,
+                        title="IRF reducida exploratoria",
+                    )
+                )
+
+            except Exception as exc:
+                st.info(str(exc))
+
+        if (
+            len(elegir) >= 2
+            and st.button("Revisar elegibilidad VECM/Johansen")
+        ):
+            try:
+                tabla, johansen = evaluar_vecm(
+                    DATA,
+                    elegir,
+                )
+
+                st.dataframe(
+                    tabla,
+                    hide_index=True,
+                )
+
+                if johansen is not None:
+                    st.dataframe(
+                        johansen,
+                        hide_index=True,
+                    )
+
+                else:
+                    st.info(
+                        "No se justifica VECM con la evidencia "
+                        "de integración disponible."
+                    )
+
+            except Exception as exc:
+                st.warning(str(exc))
+
+    with tabs[7]:
+        if disponibles(DATA, [Y, T, P]):
+            elegidos = st.multiselect(
+                "Modelos predictivos",
+                [
+                    "Media histórica",
+                    "AR(1)",
+                    "ARX",
+                    "Ridge",
+                    "Lasso",
+                    "SVR",
+                    "MLP",
+                ],
+                default=[
+                    "Media histórica",
+                    "AR(1)",
+                    "ARX",
+                    "Ridge",
+                    "Lasso",
+                    "SVR",
+                ],
+            )
+
+            if (
+                elegidos
+                and st.button("Validación cronológica y XAI")
+            ):
+                try:
+                    resumen, pronosticos, datos, features, inicio = evaluar_ml(
+                        DATA,
+                        elegidos,
+                    )
+
+                    st.dataframe(
+                        resumen,
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                    figura(
+                        px.line(
+                            pronosticos,
+                            x="mes",
+                            y="Predicho",
+                            color="Modelo",
+                            title="Pronósticos exploratorios",
+                        )
+                    )
+
+                    exportar(
+                        pronosticos,
+                        "pronosticos_ml.csv",
+                    )
+
+                    xai_models = [
+                        x for x in elegidos
+                        if x in (
+                            "Ridge",
+                            "Lasso",
+                            "SVR",
+                            "MLP",
+                        )
+                    ]
+
+                    if xai_models:
+                        importancia = xai(
+                            datos,
+                            features,
+                            inicio,
+                            xai_models[0],
+                        )
+
+                        figura(
+                            px.bar(
+                                importancia,
+                                x="Importancia",
+                                y="Regresor",
+                                orientation="h",
+                                title=(
+                                    "XAI por permutación: "
+                                    f"{xai_models[0]}"
+                                ),
+                            )
+                        )
+
+                        exportar(
+                            importancia,
+                            "importancia_xai.csv",
+                        )
+
+                    st.warning(
+                        "Validación seudofuera de muestra: "
+                        "el calendario histórico de publicación "
+                        "no está comprobado. No detecta bloqueos."
+                    )
+
+                except Exception as exc:
+                    st.error(str(exc))
+
+    with tabs[8]:
+        if disponibles(DATA, [Y, T, P]):
+            variable = st.selectbox(
+                "Variable del escenario",
+                [T, P],
+                format_func=lambda x: NOMBRES[x],
+            )
+
+            cambio = st.number_input(
+                "Cambio hipotético del indicador (p. p.)",
+                value=1.0,
+                step=0.5,
+            )
+
+            horizonte = st.slider(
+                "Meses de respuesta",
+                1,
+                12,
+                6,
+            )
+
+            if st.button(
+                "Simular trayectoria condicionada"
+            ):
+                try:
+                    modelo, _, _, _ = ajustar(DATA)
+
+                    resultado = multiplicadores(
+                        modelo,
+                        variable,
+                        cambio,
+                        horizonte,
+                    )
+
+                    graf = go.Figure()
+
+                    graf.add_trace(
+                        go.Scatter(
+                            x=resultado["Horizonte"],
+                            y=resultado["IC95_sup"],
+                            line=dict(width=0),
+                            showlegend=False,
+                        )
+                    )
+
+                    graf.add_trace(
+                        go.Scatter(
+                            x=resultado["Horizonte"],
+                            y=resultado["IC95_inf"],
+                            fill="tonexty",
+                            name="IC 95 %",
+                        )
+                    )
+
+                    graf.add_trace(
+                        go.Scatter(
+                            x=resultado["Horizonte"],
+                            y=resultado["Respuesta_pp"],
+                            mode="lines+markers",
+                            name="Respuesta",
+                        )
+                    )
+
+                    figura(graf)
+
+                    exportar(
+                        resultado,
+                        "simulacion_ardl.csv",
+                    )
+
+                    st.caption(
+                        "Escenario condicional. No es un choque "
+                        "causalmente identificado."
+                    )
+
+                except Exception as exc:
+                    st.error(str(exc))
+
+    with tabs[9]:
+        st.write(
+            "En la primera quincena de mayo de 2021, "
+            "el DANE documentó una caída del abastecimiento "
+            "de El Potrerillo de 4.618 a 1.987 toneladas "
+            "(-56,98 %). La evidencia es quincenal; "
+            "las series del observatorio son mensuales."
+        )
+
+        episodio = DATA[
+            DATA["mes"].between(
+                pd.Period("2021-04"),
+                pd.Period("2021-08"),
+            )
+        ]
+
+        columnas = [
+            c for c in (Y, T, P)
+            if c in VARS
+        ]
+
+        if columnas:
+            st.dataframe(
+                episodio[
+                    ["mes"] + columnas
+                ].assign(
+                    mes=lambda v: v["mes"].astype(str)
+                ),
+                hide_index=True,
+            )
+
+            grafico_series(
+                episodio,
+                columnas,
+                "Abril–agosto de 2021",
+            )
+
+        if disponibles(DATA, [T, P]):
+            try:
+                senales = senales_historicas(DATA)
+
+                st.dataframe(
+                    senales[
+                        senales["mes"].str.startswith("2021")
+                    ],
+                    hide_index=True,
+                )
+
+                exportar(
+                    senales,
+                    "semaforo_retrospectivo.csv",
+                )
+
+                st.warning(
+                    "Semáforo retrospectivo por percentiles. "
+                    "No es una alerta vial operativa."
+                )
+
+            except Exception as exc:
+                st.warning(str(exc))
+
+
+elif pagina == "📑 Generador de informes":
+    st.header(
+        "Informe automatizado de la investigación"
+    )
+
+    contenido = [
+        "# Informe estadístico Pasto–Colombia",
+        f"Generado: {datetime.now():%Y-%m-%d %H:%M}",
+        "",
+        "## Fuentes y cobertura",
+    ]
+
+    for variable in (Y, T, P, I):
+        n = (
+            int(DATA[variable].notna().sum())
+            if variable in DATA
+            else 0
+        )
+
+        contenido.append(
+            f"- {NOMBRES[variable]}: {n} meses"
+        )
+
+    contenido += [
+        "",
+        "## Diseño",
+        (
+            "Estudio asociativo con series mensuales "
+            "2018–2024 y muestra econométrica de "
+            "56 meses, sin imputaciones."
+        ),
+    ]
+
+    if all(
+        variable in VARS
+        for variable in (Y, T, P)
+    ):
+        try:
+            m, o, z, _ = ajustar(DATA)
+
+            bloques = contraste_bloques(m)
+
+            contenido += [
+                "",
+                "## ARDL L2 / HAC(3)",
+                (
+                    f"N = {len(z)}; "
+                    f"R² ajustado = {o.rsquared_adj:.5f}; "
+                    f"AIC = {o.aic:.5f}."
+                ),
+                (
+                    f"Coeficiente RNDC(t) = "
+                    f"{m.params['T_L0']:.6f}; "
+                    f"p HAC = {m.pvalues['T_L0']:.5f}."
+                ),
+                (
+                    f"p conjunto RNDC = "
+                    f"{bloques.iloc[0]['p_conjunto_HAC']:.5f}."
+                ),
+                (
+                    f"p conjunto SIPSA = "
+                    f"{bloques.iloc[1]['p_conjunto_HAC']:.5f}."
+                ),
+            ]
+
+        except Exception as exc:
+            contenido += [
+                "",
+                f"Modelo no estimable: {exc}",
+            ]
+
+    else:
+        contenido += [
+            "",
+            (
+                "Modelo pendiente por ausencia de "
+                "series auténticas suficientes."
+            ),
+        ]
+
+    contenido += [
+        "",
+        "## Alcance",
+        (
+            "No se identifican efectos causales "
+            "ni se predicen cierres viales."
+        ),
+        "",
+        "## Fuentes",
+        f"https://github.com/{REPO_RNDC}",
+        f"https://github.com/{REPO_SIPSA}",
+    ]
+
+    informe = "\n\n".join(contenido)
+
+    st.markdown(informe)
+
+    st.download_button(
+        "Descargar informe Markdown",
+        informe.encode("utf-8-sig"),
+        file_name="informe_observatorio.md",
+        mime="text/markdown",
+    )
+
+    exportar(
+        DATA,
+        "series_observatorio.csv",
+    )
+
+
+elif pagina == "💬 Chatbot":
+    st.header(
+        "Asistente numérico del observatorio"
+    )
+
+    st.caption(
+        "No es RAG. La integración documental "
+        "se desarrollará posteriormente."
+    )
+
+    if "dialogo" not in st.session_state:
+        st.session_state.dialogo = []
+
+    for item in st.session_state.dialogo:
+        with st.chat_message(item["rol"]):
+            st.markdown(item["texto"])
+
+    pregunta = st.chat_input(
+        "Pregunta por una variable, un mes AAAA-MM "
+        "o su promedio"
+    )
+
+    if pregunta:
+        q = normalizar(pregunta)
+
+        if any(
+            termino in q
+            for termino in (
+                "sipsa", "potrerillo", "mayorista"
+            )
+        ):
+            variable = P
+
+        elif any(
+            termino in q
+            for termino in ("rndc", "flete")
+        ):
+            variable = T
+
+        elif "ictc" in q:
+            variable = I
+
+        else:
+            variable = Y
+
+        fecha = re.search(
+            r"(20(?:18|19|2[0-4]))[- /](0?[1-9]|1[0-2])",
+            q,
+        )
+
+        if any(
+            termino in q
+            for termino in (
+                "causa", "causal", "bloqueo"
+            )
+        ):
+            respuesta = (
+                "Los modelos documentan asociaciones "
+                "y no detectan bloqueos viales."
+            )
+
+        elif variable not in VARS:
+            respuesta = (
+                f"{NOMBRES[variable]} no está disponible "
+                "en las series recuperadas."
+            )
+
+        elif fecha:
+            periodo = pd.Period(
+                f"{fecha.group(1)}-"
+                f"{int(fecha.group(2)):02d}"
+            )
+
+            fila = DATA.loc[
+                DATA["mes"] == periodo,
+                variable,
+            ]
+
+            if (
+                len(fila)
+                and pd.notna(fila.iloc[0])
+            ):
+                respuesta = (
+                    f"{NOMBRES[variable]} en {periodo}: "
+                    f"{fila.iloc[0]:.5f}."
+                )
+
+            else:
+                respuesta = (
+                    "No existe una observación auténtica "
+                    "para ese mes."
+                )
+
+        elif any(
+            termino in q
+            for termino in ("promedio", "media")
+        ):
+            respuesta = (
+                f"Promedio observado de {NOMBRES[variable]}: "
+                f"{DATA[variable].mean():.5f} "
+                f"({DATA[variable].count()} meses)."
+            )
+
+        else:
+            respuesta = (
+                "Consulta un valor mensual (AAAA-MM), "
+                "un promedio o la cobertura de una variable."
+            )
+
+        st.session_state.dialogo += [
+            {
+                "rol": "user",
+                "texto": pregunta,
+            },
+            {
+                "rol": "assistant",
+                "texto": respuesta,
+            },
+        ]
+
+        st.rerun()
+
+
+else:
+    st.header(
+        "Derechos, fuentes y créditos"
+    )
+
+    st.markdown(
+        "**Investigación:** Costos del transporte de carga, "
+        "precios mayoristas de alimentos y brecha inflacionaria "
+        "Pasto–Colombia, 2018–2024."
+    )
+
+    st.markdown(
+        "**Autores del artículo:** Juan David Granja Miramag, "
+        "Helmer Andrés Rivera Vallejos y "
+        "Yeison Alexander Ortega Rosero. "
+        "Universidad de Nariño."
+    )
+
+    st.markdown(
+        "**Fuentes:** DANE (IPC, SIPSA e ICTC) y "
+        "Ministerio de Transporte (RNDC). "
+        "El índice regional de fletes es una "
+        "construcción de los autores; GitHub "
+        "funciona como respaldo y repositorio "
+        "de productos procesados."
+    )
+
+    st.markdown(
+        f"**RNDC:** https://github.com/{REPO_RNDC}"
+    )
+
+    st.markdown(
+        f"**SIPSA:** https://github.com/{REPO_SIPSA}"
+    )
+
+    st.info(
+        "No se realizan imputaciones. No se atribuye "
+        "causalidad, no se generan alertas operativas "
+        "y todavía no se implementa RAG."
+    )
+
+
+st.divider()
+
 st.caption(
-    "Observatorio · Datos oficiales (datos.gov.co) · "
-    "Desarrolladores: Jeison Ortega · Juan David Granja · Helmer Rivera · Francisco Quiroz · "
-    "Universidad de Nariño"
+    "Observatorio Pasto–Nariño · "
+    "Fuentes oficiales y derivados auditables · "
+    "Evidencia mensual 2018–2024"
 )
